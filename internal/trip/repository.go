@@ -17,6 +17,10 @@ type Repository struct {
 	pool *pgxpool.Pool
 }
 
+func NewRepository(pool *pgxpool.Pool) *Repository {
+ return &Repository{pool: pool}
+}
+
 //если есть транзакция в контексте, возвращаем ее, иначе возрващаем пул
 func (r *Repository) querier(ctx context.Context) interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row

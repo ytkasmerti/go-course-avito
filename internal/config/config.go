@@ -17,6 +17,10 @@ type Config struct {
 	DatabaseMaxConnLifetime time.Duration
 	DatabaseConnectTimeout  time.Duration
 	DatabaseQueryTimeout    time.Duration
+	HTTPReadTimeout       time.Duration
+	HTTPReadHeaderTimeout time.Duration
+	HTTPWriteTimeout      time.Duration
+	HTTPIdleTimeout       time.Duration
 }
 
 func Load() (*Config, error) {
@@ -64,6 +68,26 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Parse DATABASE_QUERY_TIMEOUT: %w", err)
 	}
+
+	httpReadTimeout, err := time.ParseDuration(os.Getenv("HTTP_READ_TIMEOUT"))
+	if err != nil {
+		return nil, fmt.Errorf("parse HTTP_READ_TIMEOUT: %w", err)
+	}
+
+	httpReadHeaderTimeout, err := time.ParseDuration(os.Getenv("HTTP_READ_HEADER_TIMEOUT"))
+	if err != nil {
+		return nil, fmt.Errorf("parse HTTP_READ_HEADER_TIMEOUT: %w", err)
+	}
+
+	httpWriteTimeout, err := time.ParseDuration(os.Getenv("HTTP_WRITE_TIMEOUT"))
+	if err != nil {
+		return nil, fmt.Errorf("parse HTTP_WRITE_TIMEOUT: %w", err)
+	}
+
+	httpIdleTimeout, err := time.ParseDuration(os.Getenv("HTTP_IDLE_TIMEOUT"))
+	if err != nil {
+		return nil, fmt.Errorf("parse HTTP_IDLE_TIMEOUT: %w", err)
+	}
 	
 	return &Config{
 		HTTPAddr: httpAddr,
@@ -75,5 +99,9 @@ func Load() (*Config, error) {
 		DatabaseMaxConnLifetime: maxConnLifetime,
 		DatabaseConnectTimeout: connectTimeout,
 		DatabaseQueryTimeout: queryTimeout,
+		HTTPReadTimeout: httpReadTimeout,
+		HTTPReadHeaderTimeout: httpReadHeaderTimeout,
+		HTTPWriteTimeout: httpWriteTimeout,
+		HTTPIdleTimeout: httpIdleTimeout,
 	}, nil
 }

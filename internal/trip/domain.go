@@ -24,7 +24,7 @@ type Trip struct {
 	Price          int64
 	Status         Status
 	StartedAt      time.Time
-	FinishedAt     time.Time
+	FinishedAt     *time.Time
 }
 
 var (

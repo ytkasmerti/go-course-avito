@@ -22,6 +22,10 @@ type CreateInput struct {
 	Price          int64
 }
 
+func NewService(repo *Repository, tx txmanager.TxManager) *Service {
+ return &Service{repo: repo, tx: tx}
+}
+
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Trip, error) {
 	t := &Trip{
 		ID:             uuid.New(),
