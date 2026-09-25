@@ -23,7 +23,7 @@ func New(pool *pgxpool.Pool) TxManager {
 
 func (m *Manager) Do(ctx context.Context, fn func(ctx context.Context) error) error {
 	//Проверка, есть ли ранзакция в контексте
-	if _, ok := ctx.Value(ctxKey{}).(pgx.Tx); ok{
+	if _, ok := TxFromContext(ctx); ok{
 		return fn(ctx)
 	}
 
@@ -58,4 +58,9 @@ func (m *Manager) Do(ctx context.Context, fn func(ctx context.Context) error) er
 	}
 
 	return nil
+}
+
+func TxFromContext(ctx context.Context) (pgx.Tx, bool) {
+	tx, ok := ctx.Value(ctxKey{}).(pgx.Tx)
+	return tx, ok
 }
