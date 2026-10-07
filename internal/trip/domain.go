@@ -3,6 +3,7 @@ package trip
 import (
 	"errors"
 	"time"
+
 	"github.com/google/uuid"
 )
 
@@ -28,8 +29,10 @@ type Trip struct {
 }
 
 var (
-	ErrTripNotFound   = errors.New("Trip not found")
-	ErrDriverBusy     = errors.New("Driver already has an active trip")
-	ErrTripCompleted  = errors.New("Trip already completed")
-	ErrInvalidRequest = errors.New("Invalid request")
+	ErrTripNotFound        = errors.New("Trip not found")
+	ErrDriverBusy          = errors.New("Driver already has an active trip")
+	ErrTripCompleted       = errors.New("Trip already completed")
+	ErrInvalidRequest      = errors.New("Invalid request")
+	ErrIdempotencyConflict = errors.New("Idempotency key reused with different body")
+	ErrIdempotencyRace     = errors.New("Idempotency key race")
 )

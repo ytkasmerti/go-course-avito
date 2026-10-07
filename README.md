@@ -4,7 +4,7 @@
 
 ## Требования
 
-- Go 1.24+
+- Go 1.27+
 - tripgoctl (https://github.com/course-go-autumn-2026/course-infra)
 - make, psql, jq
 
@@ -17,6 +17,25 @@ set -a; source .env; set +a
 make migrate
 make run
 ```
+
+### Запуск в Docker
+```bash
+docker build -f deploy/Dockerfile -t trip-service:local .
+set -a; source .env; set +a
+docker run --rm -p 8080:8080 \
+  -e HTTP_ADDR=:8080 \
+  -e DATABASE_URL="$(echo "$DATABASE_URL" | sed 's/localhost/host.docker.internal/')" \
+  -e LOG_LEVEL=info -e SHUTDOWN_TIMEOUT=10s \
+  -e HTTP_READ_TIMEOUT=5s -e HTTP_READ_HEADER_TIMEOUT=2s \
+  -e HTTP_WRITE_TIMEOUT=10s -e HTTP_IDLE_TIMEOUT=60s \
+  -e DATABASE_MAX_CONNS=10 -e DATABASE_MIN_CONNS=2 \
+  -e DATABASE_MAX_CONN_LIFETIME=30m \
+  -e DATABASE_CONNECT_TIMEOUT=5s -e DATABASE_QUERY_TIMEOUT=3s \
+  trip-service:local
+```
+
+## Переменные окружения
+Все переменные перечислены в .env.example
 
 ## Решения:
 - Уровень изоляции — ReadCommitted. Это дефолт PostgreSQL и для данных задач его достаточно.
@@ -43,5 +62,7 @@ make run
 
 - Сервер на net/http + chi, таймауты ReadTimeout, ReadHeaderTimeout, WriteTimeout, IdleTimeout (добавлены в конфиг из .env). Graceful shutdown по SIGINT/SIGTERM в пределах SHUTDOWN_TIMEOUT.
 
-## Что не сделано:
-- Задачи со звездочкой
+## Задачи со звёздочкой:
+- Идемпотентность POST /api/v1/trips по заголовку Idempotency-Key. Первый запрос с ключом — 201, повтор с тем же ключом и телом — 200 и та же поездка, тот же ключ с другим телом — 409 idempotency_conflict. Без заголовка — обычные 201. Ключ и поездка пишутся в одной транзакции, TTL ключа — 24 часа, после этого запись не читается.
+
+- Dockerfile с многостадийной сборкой: build на golang:1.27-alpine, итоговый образ на gcr.io/distroless/static-debian12:nonroot, без исходников и тулчейна, процесс от nonroot. Размер итогового образа — 4.93 МБ.

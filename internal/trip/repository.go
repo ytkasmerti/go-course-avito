@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
 	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,11 +19,16 @@ type Repository struct {
 	pool *pgxpool.Pool
 }
 
-func NewRepository(pool *pgxpool.Pool) *Repository {
- return &Repository{pool: pool}
+type IdempotencyRecord struct {
+	TripID      uuid.UUID
+	RequestHash string
 }
 
-//если есть транзакция в контексте, возвращаем ее, иначе возрващаем пул
+func NewRepository(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+// если есть транзакция в контексте, возвращаем ее, иначе возрващаем пул
 func (r *Repository) querier(ctx context.Context) interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
@@ -50,7 +57,7 @@ func (r *Repository) Create(ctx context.Context, t *Trip) error {
 
 	if _, err := r.querier(ctx).Exec(ctx, sql, args...); err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "trips_driver_active_uniq" {
 			return ErrDriverBusy
 		}
 		return fmt.Errorf("Insert trip: %w", err)
@@ -129,4 +136,46 @@ func (r *Repository) Finish(ctx context.Context, id uuid.UUID) (*Trip, error) {
 	}
 
 	return nil, ErrTripNotFound
+}
+
+func (r *Repository) GetIdempotencyKey(ctx context.Context, key uuid.UUID) (*IdempotencyRecord, error) {
+	q := sq.Select("trip_id", "request_hash").
+		From("idempotency_keys").
+		Where(sq.Eq{"key": key}).
+		Where("expires_at > now()").
+		PlaceholderFormat(sq.Dollar)
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("Build select idempotency: %w", err)
+	}
+
+	var rec IdempotencyRecord
+	err = r.querier(ctx).QueryRow(ctx, sql, args...).Scan(&rec.TripID, &rec.RequestHash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("Select idempotency: %w", err)
+	}
+	return &rec, nil
+}
+
+func (r *Repository) SaveIdempotencyKey(ctx context.Context, key uuid.UUID, hash string, tripID uuid.UUID, ttl time.Duration) error {
+	q := sq.Insert("idempotency_keys").
+		Columns("key", "request_hash", "trip_id", "expires_at").
+		Values(key, hash, tripID, time.Now().Add(ttl)).
+		PlaceholderFormat(sq.Dollar)
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return fmt.Errorf("Build insert idempotency: %w", err)
+	}
+
+	if _, err := r.querier(ctx).Exec(ctx, sql, args...); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idempotency_keys_pkey" {
+			return ErrIdempotencyRace
+		}
+		return fmt.Errorf("Insert idempotency: %w", err)
+	}
+	return nil
 }

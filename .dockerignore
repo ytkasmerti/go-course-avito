@@ -1,0 +1,10 @@
+.git
+.gitignore
+.tripgo/
+.env
+.env.example
+*.md
+migrations/
+config/
+deploy/
+bin/

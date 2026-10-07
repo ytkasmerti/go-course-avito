@@ -6,11 +6,12 @@ import (
 	"errors"
 	"log"
 	"net/http"
+
 	api "github.com/ytkasmerti/go-course-avito/internal/generated"
 )
 
-type Pinger interface{ 
-	Ping(ctx context.Context) error 
+type Pinger interface {
+	Ping(ctx context.Context) error
 }
 
 type Handler struct {
@@ -20,8 +21,10 @@ type Handler struct {
 	log  *log.Logger
 }
 
-func NewHandler(svc *Service, pool interface{ Ping(ctx context.Context) error }, log *log.Logger) *Handler {
- return &Handler{svc: svc, pool: pool, log: log}
+func NewHandler(svc *Service, pool interface {
+	Ping(ctx context.Context) error
+}, log *log.Logger) *Handler {
+	return &Handler{svc: svc, pool: pool, log: log}
 }
 
 // POST /api/v1/trips
@@ -42,15 +45,20 @@ func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, params api.
 		Price:          body.Price,
 	}
 
-	t, err := h.svc.Create(r.Context(), in)
+	t, repeated, err := h.svc.Create(r.Context(), in, params.IdempotencyKey)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
 	}
 
+	status := http.StatusCreated
+	if repeated {
+		status = http.StatusOK
+	}
+
 	w.Header().Set("Location", "/api/v1/trips/"+t.ID.String())
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(toAPI(t))
 }
 
@@ -107,6 +115,8 @@ func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error)
 		h.problem(w, r, http.StatusConflict, "trip_completed", "Trip completed", "Trip already completed")
 	case errors.Is(err, ErrInvalidRequest):
 		h.problem(w, r, http.StatusBadRequest, "invalid_request", "Invalid request", err.Error())
+	case errors.Is(err, ErrIdempotencyConflict):
+		h.problem(w, r, http.StatusConflict, "idempotency_conflict", "Idempotency conflict", "Idempotency key reused with different body")
 	default:
 		h.log.Printf("Internal error: %v", err)
 		h.problem(w, r, http.StatusInternalServerError, "internal_error", "Internal error", "internal error")
