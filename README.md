@@ -4,24 +4,27 @@
 
 ## Требования
 
-- Go 1.27+
+- Docker (запущенный), Go 1.27+, make, psql, jq
 - tripgoctl (https://github.com/course-go-autumn-2026/course-infra)
-- make, psql, jq
 
-## Запуск
+Все команды выполняются из корня проекта.
 
+## Локальный запуск
 ```bash
-tripgoctl cluster start
-tripgoctl environment start
-set -a; source .env; set +a
+tripgoctl cluster start          # один раз на машине
+tripgoctl environment start      # создает .env с адресами БД и коллектора
+set -a; source .env.example; source .env; set +a
 make migrate
 make run
 ```
+Остановка сервиса: `Ctrl+C`
 
 ### Запуск в Docker
 ```bash
-docker build -f deploy/Dockerfile -t trip-service:local .
+tripgoctl cluster start          # один раз на машине
+tripgoctl environment start
 set -a; source .env; set +a
+make migrate
 docker run --rm -p 8080:8080 \
   -e HTTP_ADDR=:8080 \
   -e DATABASE_URL="$(echo "$DATABASE_URL" | sed 's/localhost/host.docker.internal/')" \
@@ -33,6 +36,7 @@ docker run --rm -p 8080:8080 \
   -e DATABASE_CONNECT_TIMEOUT=5s -e DATABASE_QUERY_TIMEOUT=3s \
   trip-service:local
 ```
+Остановка сервиса: `Ctrl+C`
 
 ## Переменные окружения
 Все переменные перечислены в .env.example
