@@ -9,12 +9,13 @@ import (
 )
 
 type Usecase struct {
-	repo tripRepository
-	tx   txManager
+	repo    tripRepository
+	tx      txManager
+	metrics businessMetrics
 }
 
-func New(repo tripRepository, tx txManager) *Usecase {
-	return &Usecase{repo: repo, tx: tx}
+func New(repo tripRepository, tx txManager, metrics businessMetrics) *Usecase {
+	return &Usecase{repo: repo, tx: tx, metrics: metrics}
 }
 
 func (u *Usecase) Do(ctx context.Context, id uuid.UUID) (*model.Trip, error) {
@@ -30,5 +31,6 @@ func (u *Usecase) Do(ctx context.Context, id uuid.UUID) (*model.Trip, error) {
 	if err != nil {
 		return nil, err
 	}
+	u.metrics.IncCompleted(ctx)
 	return t, nil
 }

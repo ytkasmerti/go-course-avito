@@ -3,44 +3,34 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os/signal"
 	"syscall"
-	"github.com/go-chi/chi/v5"
+
 	"github.com/ytkasmerti/go-course-avito/internal/config"
-	"github.com/ytkasmerti/go-course-avito/internal/db"
-	api "github.com/ytkasmerti/go-course-avito/internal/generated"
-	"github.com/ytkasmerti/go-course-avito/internal/trip"
-	"github.com/ytkasmerti/go-course-avito/internal/txmanager"
+	"github.com/ytkasmerti/go-course-avito/internal/container"
 )
 
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Load config: %v", err)
+		slog.Error("load config", "err", err)
+		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.NewPool(ctx, *cfg)
+	c, err := container.New(ctx, *cfg)
 	if err != nil {
-		log.Fatalf("Connect db: %v", err)
+		slog.Error("init container", "err", err)
+		return
 	}
-	defer pool.Close()
-
-	txManager := txmanager.New(pool)
-	repo := trip.NewRepository(pool)
-	service := trip.NewService(repo, txManager)
-	handler := trip.NewHandler(service, pool, log.Default())
-
-	router := chi.NewRouter()
-	api.HandlerFromMux(handler, router)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           router,
+		Handler:           c.Handler,
 		ReadTimeout:       cfg.HTTPReadTimeout,
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout,
@@ -48,20 +38,24 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("Server started: %s", cfg.HTTPAddr)
+		c.Logger.Info("server started", "addr", cfg.HTTPAddr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Listen and serve: %v", err)
+			c.Logger.Error("listen", "err", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("Shutdown server")
+	c.Logger.Info("shutdown started")
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Shutdown server: %v", err)
+		c.Logger.Error("server shutdown", "err", err)
+	}
+	if err := c.Shutdown(shutdownCtx); err != nil {
+		c.Logger.Error("container shutdown", "err", err)
 	}
 
-	log.Println("Server stopped")
+	c.Logger.Info("shutdown completed")
 }

@@ -20,4 +20,8 @@ type (
 	txManager interface {
 		Do(ctx context.Context, fn func(ctx context.Context) error) error
 	}
+
+	businessMetrics interface {
+		IncCreated(ctx context.Context)
+	}
 )

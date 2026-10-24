@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/google/uuid"
+
+	domaintrip "github.com/ytkasmerti/go-course-avito/internal/domain/trip"
 	api "github.com/ytkasmerti/go-course-avito/internal/generated"
 	"github.com/ytkasmerti/go-course-avito/internal/http/domainerror"
 	usecaseCreate "github.com/ytkasmerti/go-course-avito/internal/usecase/trip/create"
@@ -19,8 +22,46 @@ func New(uc createUsecase) *Handler {
 
 func (h *Handler) Handle(w http.ResponseWriter, r *http.Request, params api.CreateTripParams) {
 	var body api.CreateTripJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		status, p := domainerror.Problem(&validationError{field: "body", msg: "invalid json"})
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "body", Message: err.Error()})
+		writeProblem(w, status, p)
+		return
+	}
+
+	if body.UserId == uuid.Nil {
+		status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "user_id", Message: "required"})
+		writeProblem(w, status, p)
+		return
+	}
+	if body.DriverId == uuid.Nil {
+		status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "driver_id", Message: "required"})
+		writeProblem(w, status, p)
+		return
+	}
+	if body.Price < 0 {
+		status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "price", Message: "must be >= 0"})
+		writeProblem(w, status, p)
+		return
+	}
+	if body.StartPoint.Latitude < -90 || body.StartPoint.Latitude > 90 {
+		status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "start_point.latitude", Message: "out of range"})
+		writeProblem(w, status, p)
+		return
+	}
+	if body.EndPoint.Latitude < -90 || body.EndPoint.Latitude > 90 {
+		status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "end_point.latitude", Message: "out of range"})
+		writeProblem(w, status, p)
+		return
+	}
+	if body.StartPoint.Longitude < -180 || body.StartPoint.Longitude > 180 {
+		status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "start_point.longitude", Message: "out of range"})
+		writeProblem(w, status, p)
+		return
+	}
+	if body.EndPoint.Longitude < -180 || body.EndPoint.Longitude > 180 {
+		status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "end_point.longitude", Message: "out of range"})
 		writeProblem(w, status, p)
 		return
 	}
@@ -57,13 +98,4 @@ func writeProblem(w http.ResponseWriter, status int, p api.Problem) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(p)
-}
-
-type validationError struct {
-	field string
-	msg   string
-}
-
-func (e *validationError) Error() string {
-	return e.field + ": " + e.msg
 }

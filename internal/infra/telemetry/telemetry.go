@@ -8,8 +8,8 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -29,10 +29,8 @@ func New(ctx context.Context, logLevel string) (*Telemetry, error) {
 		level = slog.LevelInfo
 	}
 
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
 			semconv.ServiceName("trip-service"),
 			semconv.ServiceVersion("1.0.0"),
 			attribute.String("service.namespace", "tripgo"),
@@ -43,7 +41,7 @@ func New(ctx context.Context, logLevel string) (*Telemetry, error) {
 		return nil, fmt.Errorf("resource: %w", err)
 	}
 
-	traceExp, err := otlptracegrpc.New(ctx)
+	traceExp, err := otlptracehttp.New(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("otlp trace exporter: %w", err)
 	}
@@ -57,7 +55,7 @@ func New(ctx context.Context, logLevel string) (*Telemetry, error) {
 		propagation.Baggage{},
 	))
 
-	metricExp, err := otlpmetricgrpc.New(ctx)
+	metricExp, err := otlpmetrichttp.New(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("otlp metric exporter: %w", err)
 	}

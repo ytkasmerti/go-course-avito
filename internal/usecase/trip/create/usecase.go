@@ -27,12 +27,13 @@ type Input struct {
 }
 
 type Usecase struct {
-	repo tripRepository
-	tx   txManager
+	repo    tripRepository
+	tx      txManager
+	metrics businessMetrics
 }
 
-func New(repo tripRepository, tx txManager) *Usecase {
-	return &Usecase{repo: repo, tx: tx}
+func New(repo tripRepository, tx txManager, metrics businessMetrics) *Usecase {
+	return &Usecase{repo: repo, tx: tx, metrics: metrics}
 }
 
 func (u *Usecase) Do(ctx context.Context, in Input, idemKey *uuid.UUID) (*model.Trip, bool, error) {
@@ -120,6 +121,7 @@ func (u *Usecase) createInTx(ctx context.Context, in Input) (*model.Trip, error)
 		t = tt
 		return nil
 	})
+	u.metrics.IncCreated(ctx)
 	return t, err
 }
 

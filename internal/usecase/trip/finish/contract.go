@@ -17,4 +17,8 @@ type (
 	txManager interface {
 		Do(ctx context.Context, fn func(ctx context.Context) error) error
 	}
+
+	businessMetrics interface {
+		IncCompleted(ctx context.Context)
+	}
 )
