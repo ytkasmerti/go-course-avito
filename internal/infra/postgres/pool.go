@@ -20,6 +20,7 @@ func NewPool(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
 	poolCfg.MinConns = cfg.DatabaseMinConns
 	poolCfg.MaxConnLifetime = cfg.DatabaseMaxConnLifetime
 	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprintf("%d", cfg.DatabaseQueryTimeout.Milliseconds())
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {

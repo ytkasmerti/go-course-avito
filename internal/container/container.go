@@ -42,7 +42,7 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 
 	pool, err := postgres.NewPool(ctx, cfg)
 	if err != nil {
-		tel.Shutdown(ctx)
+		_ = tel.Shutdown(ctx)
 		return nil, fmt.Errorf("init pool: %w", err)
 	}
 
@@ -52,7 +52,7 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 	bizMetrics, err := telemetry.NewBusinessMetrics()
 	if err != nil {
 		pool.Close()
-		tel.Shutdown(ctx)
+		_ = tel.Shutdown(ctx)
 		return nil, fmt.Errorf("init business metrics: %w", err)
 	}
 
@@ -69,7 +69,7 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 	metricsMiddleware, err := middleware.Metrics()
 	if err != nil {
 		pool.Close()
-		tel.Shutdown(ctx)
+		_ = tel.Shutdown(ctx)
 		return nil, fmt.Errorf("init metrics: %w", err)
 	}
 
@@ -126,7 +126,11 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 
 	router.Get("/ready", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if err := pool.Ping(r.Context()); err != nil {
+
+		pingCtx, cancel := context.WithTimeout(r.Context(), cfg.DatabaseQueryTimeout)
+		defer cancel()
+
+		if err := pool.Ping(pingCtx); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(api.HealthResponse{Status: api.Unavailable})
 			return

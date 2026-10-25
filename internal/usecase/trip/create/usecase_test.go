@@ -148,7 +148,7 @@ func TestUsecase_Create_IdempotencyRepeat(t *testing.T) {
 
 func hashOf(in uc.Input) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%v|%v|%v|%v|%d",
+	_, _ = fmt.Fprintf(h, "%s|%s|%v|%v|%v|%v|%d",
 		in.UserID, in.DriverID,
 		in.StartLatitude, in.StartLongitude,
 		in.EndLatitude, in.EndLongitude,

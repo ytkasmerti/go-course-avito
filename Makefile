@@ -19,3 +19,6 @@ test:
 
 test-integration:
 	CGO_ENABLED=1 go test -race -cover -tags=integration ./internal/repository/...
+
+lint:
+	go tool golangci-lint run

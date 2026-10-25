@@ -147,7 +147,7 @@ func (u *Usecase) insertTrip(ctx context.Context, in Input) (*model.Trip, error)
 
 func hashInput(in Input) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%v|%v|%v|%v|%d",
+	_, _ = fmt.Fprintf(h, "%s|%s|%v|%v|%v|%v|%d",
 		in.UserID, in.DriverID,
 		in.StartLatitude, in.StartLongitude,
 		in.EndLatitude, in.EndLongitude,

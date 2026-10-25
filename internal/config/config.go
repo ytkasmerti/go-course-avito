@@ -3,24 +3,24 @@ package config
 import (
 	"fmt"
 	"os"
-	"time"
 	"strconv"
+	"time"
 )
 
 type Config struct {
-	HTTPAddr        string
-	DatabaseURL     string
-	LogLevel        string
-	ShutdownTimeout time.Duration
-	DatabaseMaxConns   int32
-	DatabaseMinConns   int32
+	HTTPAddr                string
+	DatabaseURL             string
+	LogLevel                string
+	ShutdownTimeout         time.Duration
+	DatabaseMaxConns        int32
+	DatabaseMinConns        int32
 	DatabaseMaxConnLifetime time.Duration
 	DatabaseConnectTimeout  time.Duration
 	DatabaseQueryTimeout    time.Duration
-	HTTPReadTimeout       time.Duration
-	HTTPReadHeaderTimeout time.Duration
-	HTTPWriteTimeout      time.Duration
-	HTTPIdleTimeout       time.Duration
+	HTTPReadTimeout         time.Duration
+	HTTPReadHeaderTimeout   time.Duration
+	HTTPWriteTimeout        time.Duration
+	HTTPIdleTimeout         time.Duration
 }
 
 func Load() (*Config, error) {
@@ -43,7 +43,7 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse SHUTDOWN_TIMEOUT: %w", err)
 	}
-	
+
 	maxConns, err := strconv.Atoi(os.Getenv("DATABASE_MAX_CONNS"))
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_MAX_CONNS: %w", err)
@@ -56,17 +56,17 @@ func Load() (*Config, error) {
 
 	maxConnLifetime, err := time.ParseDuration(os.Getenv("DATABASE_MAX_CONN_LIFETIME"))
 	if err != nil {
-		return nil, fmt.Errorf("Parse DATABASE_MAX_CONN_LIFETIME: %w", err)
+		return nil, fmt.Errorf("parse DATABASE_MAX_CONN_LIFETIME: %w", err)
 	}
 
 	connectTimeout, err := time.ParseDuration(os.Getenv("DATABASE_CONNECT_TIMEOUT"))
 	if err != nil {
-		return nil, fmt.Errorf("Parse DATABASE_CONNECT_TIMEOUT: %w", err)
+		return nil, fmt.Errorf("parse DATABASE_CONNECT_TIMEOUT: %w", err)
 	}
 
 	queryTimeout, err := time.ParseDuration(os.Getenv("DATABASE_QUERY_TIMEOUT"))
 	if err != nil {
-		return nil, fmt.Errorf("Parse DATABASE_QUERY_TIMEOUT: %w", err)
+		return nil, fmt.Errorf("parse DATABASE_QUERY_TIMEOUT: %w", err)
 	}
 
 	httpReadTimeout, err := time.ParseDuration(os.Getenv("HTTP_READ_TIMEOUT"))
@@ -88,20 +88,20 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse HTTP_IDLE_TIMEOUT: %w", err)
 	}
-	
+
 	return &Config{
-		HTTPAddr: httpAddr,
-		DatabaseURL: dbURL,
-		LogLevel: logLevel,
-		ShutdownTimeout: shutdownTimeout,
-		DatabaseMaxConns: int32(maxConns),
-		DatabaseMinConns: int32(minConns),
+		HTTPAddr:                httpAddr,
+		DatabaseURL:             dbURL,
+		LogLevel:                logLevel,
+		ShutdownTimeout:         shutdownTimeout,
+		DatabaseMaxConns:        int32(maxConns),
+		DatabaseMinConns:        int32(minConns),
 		DatabaseMaxConnLifetime: maxConnLifetime,
-		DatabaseConnectTimeout: connectTimeout,
-		DatabaseQueryTimeout: queryTimeout,
-		HTTPReadTimeout: httpReadTimeout,
-		HTTPReadHeaderTimeout: httpReadHeaderTimeout,
-		HTTPWriteTimeout: httpWriteTimeout,
-		HTTPIdleTimeout: httpIdleTimeout,
+		DatabaseConnectTimeout:  connectTimeout,
+		DatabaseQueryTimeout:    queryTimeout,
+		HTTPReadTimeout:         httpReadTimeout,
+		HTTPReadHeaderTimeout:   httpReadHeaderTimeout,
+		HTTPWriteTimeout:        httpWriteTimeout,
+		HTTPIdleTimeout:         httpIdleTimeout,
 	}, nil
 }

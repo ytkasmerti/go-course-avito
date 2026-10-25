@@ -37,15 +37,20 @@ func main() {
 		IdleTimeout:       cfg.HTTPIdleTimeout,
 	}
 
+	errCh := make(chan error, 1)
 	go func() {
 		c.Logger.Info("server started", "addr", cfg.HTTPAddr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			c.Logger.Error("listen", "err", err)
+			errCh <- err
 		}
 	}()
 
-	<-ctx.Done()
-	c.Logger.Info("shutdown started")
+	select {
+	case <-ctx.Done():
+		c.Logger.Info("shutdown started")
+	case err := <-errCh:
+		c.Logger.Error("server failed", "err", err)
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()

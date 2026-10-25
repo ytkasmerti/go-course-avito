@@ -47,22 +47,18 @@ func Metrics() (func(http.Handler) http.Handler, error) {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			route := chi.RouteContext(r.Context()).RoutePattern()
-			if route == "" {
-				route = r.URL.Path
-			}
-
-			attrs := metric.WithAttributes(
-				attribute.String("http.request.method", r.Method),
-				attribute.String("http.route", route),
-			)
-
-			m.active.Add(r.Context(), 1, attrs)
-			defer m.active.Add(r.Context(), -1, attrs)
+			active := metric.WithAttributes(attribute.String("http.request.method", r.Method))
+			m.active.Add(r.Context(), 1, active)
+			defer m.active.Add(r.Context(), -1, active)
 
 			start := time.Now()
 			ww := chiMiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(ww, r)
+
+			route := "unmatched"
+			if rc := chi.RouteContext(r.Context()); rc != nil && rc.RoutePattern() != "" {
+				route = rc.RoutePattern()
+			}
 
 			m.duration.Record(r.Context(), time.Since(start).Seconds(),
 				metric.WithAttributes(

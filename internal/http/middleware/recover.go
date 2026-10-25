@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -15,7 +16,7 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				if p := recover(); p != nil {
 					log.Error("panic", "panic", p, "stack", string(debug.Stack()))
-					status, problem := domainerror.Problem(nil)
+					status, problem := domainerror.Problem(fmt.Errorf("panic"))
 					w.Header().Set("Content-Type", "application/problem+json")
 					w.WriteHeader(status)
 					_ = json.NewEncoder(w).Encode(problem)

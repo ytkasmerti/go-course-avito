@@ -1,7 +1,6 @@
 package create
 
 import (
-	domaintrip "github.com/ytkasmerti/go-course-avito/internal/domain/trip"
 	api "github.com/ytkasmerti/go-course-avito/internal/generated"
 	"github.com/ytkasmerti/go-course-avito/internal/model"
 )
@@ -19,5 +18,3 @@ func toAPI(t *model.Trip) api.Trip {
 		FinishedAt: t.FinishedAt,
 	}
 }
-
-var _ = domaintrip.StatusActive
