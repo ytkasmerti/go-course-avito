@@ -121,7 +121,6 @@ func (u *Usecase) createInTx(ctx context.Context, in Input) (*model.Trip, error)
 		t = tt
 		return nil
 	})
-	u.metrics.IncCreated(ctx)
 	return t, err
 }
 
@@ -142,6 +141,7 @@ func (u *Usecase) insertTrip(ctx context.Context, in Input) (*model.Trip, error)
 	if err := u.repo.Create(ctx, *t); err != nil {
 		return nil, err
 	}
+	u.metrics.IncCreated(ctx)
 	return t, nil
 }
 
