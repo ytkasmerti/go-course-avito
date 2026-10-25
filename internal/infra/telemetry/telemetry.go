@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -15,12 +16,35 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Telemetry struct {
 	Logger         *slog.Logger
 	shutdownTrace  func(context.Context) error
 	shutdownMetric func(context.Context) error
+}
+
+type traceHandler struct {
+	slog.Handler
+}
+
+func (h traceHandler) Handle(ctx context.Context, r slog.Record) error {
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		r.AddAttrs(
+			slog.String("trace_id", sc.TraceID().String()),
+			slog.String("span_id", sc.SpanID().String()),
+		)
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h traceHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return traceHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+func (h traceHandler) WithGroup(name string) slog.Handler {
+	return traceHandler{Handler: h.Handler.WithGroup(name)}
 }
 
 func New(ctx context.Context, logLevel string) (*Telemetry, error) {
@@ -60,25 +84,20 @@ func New(ctx context.Context, logLevel string) (*Telemetry, error) {
 		return nil, fmt.Errorf("otlp metric exporter: %w", err)
 	}
 	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(10*time.Second))),
 		sdkmetric.WithResource(res),
+		sdkmetric.WithView(sdkmetric.NewView(
+			sdkmetric.Instrument{Kind: sdkmetric.InstrumentKindHistogram},
+			sdkmetric.Stream{Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+				Boundaries: []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+			}},
+		)),
 	)
 	otel.SetMeterProvider(mp)
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			switch a.Key {
-			case slog.TimeKey:
-				return slog.Attr{Key: "time", Value: a.Value}
-			case slog.MessageKey:
-				return slog.Attr{Key: "msg", Value: a.Value}
-			case slog.LevelKey:
-				return slog.Attr{Key: "level", Value: a.Value}
-			}
-			return a
-		},
-	}).WithAttrs([]slog.Attr{slog.String("service", "trip-service")}))
+	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}).
+		WithAttrs([]slog.Attr{slog.String("service", "trip-service")})
+	logger := slog.New(traceHandler{Handler: base})
 
 	return &Telemetry{
 		Logger:         logger,

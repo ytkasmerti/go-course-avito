@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/google/uuid"
@@ -16,24 +17,21 @@ import (
 	uc "github.com/ytkasmerti/go-course-avito/internal/usecase/trip/create"
 )
 
+var testLog = slog.New(slog.DiscardHandler)
+
 func TestUsecase_Create_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-
 	repo := NewMocktripRepository(ctrl)
 	tx := NewMocktxManager(ctrl)
 	metrics := NewMockbusinessMetrics(ctrl)
-
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 1450}
-
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
 	repo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 	metrics.EXPECT().IncCreated(gomock.Any())
-
-	u := uc.New(repo, tx, metrics)
+	u := uc.New(repo, tx, metrics, testLog)
 	trip, repeated, err := u.Do(context.Background(), in, nil)
-
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,20 +43,15 @@ func TestUsecase_Create_Success(t *testing.T) {
 func TestUsecase_Create_DriverBusy(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-
 	repo := NewMocktripRepository(ctrl)
 	tx := NewMocktxManager(ctrl)
 	metrics := NewMockbusinessMetrics(ctrl)
-
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
-
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
 	repo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(domaintrip.ErrDriverBusy)
-
-	u := uc.New(repo, tx, metrics)
+	u := uc.New(repo, tx, metrics, testLog)
 	_, _, err := u.Do(context.Background(), in, nil)
-
 	if !errors.Is(err, domaintrip.ErrDriverBusy) {
 		t.Fatalf("want ErrDriverBusy, got %v", err)
 	}
@@ -67,24 +60,19 @@ func TestUsecase_Create_DriverBusy(t *testing.T) {
 func TestUsecase_Create_IdempotencyConflict(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-
 	repo := NewMocktripRepository(ctrl)
 	tx := NewMocktxManager(ctrl)
 	metrics := NewMockbusinessMetrics(ctrl)
-
 	key := uuid.New()
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
-
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
 	repo.EXPECT().GetIdempotencyKey(gomock.Any(), key).Return(&model.IdempotencyRecord{
 		TripID:      uuid.New(),
 		RequestHash: "different-hash",
 	}, nil)
-
-	u := uc.New(repo, tx, metrics)
+	u := uc.New(repo, tx, metrics, testLog)
 	_, _, err := u.Do(context.Background(), in, &key)
-
 	if !errors.Is(err, domaintrip.ErrIdempotencyConflict) {
 		t.Fatalf("want ErrIdempotencyConflict, got %v", err)
 	}
@@ -93,37 +81,30 @@ func TestUsecase_Create_IdempotencyConflict(t *testing.T) {
 func TestUsecase_Create_RepoError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-
 	repo := NewMocktripRepository(ctrl)
 	tx := NewMocktxManager(ctrl)
 	metrics := NewMockbusinessMetrics(ctrl)
-
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
 	dbErr := errors.New("db down")
-
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
 	repo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(dbErr)
-
-	u := uc.New(repo, tx, metrics)
+	u := uc.New(repo, tx, metrics, testLog)
 	_, _, err := u.Do(context.Background(), in, nil)
-
 	if !errors.Is(err, dbErr) {
 		t.Fatalf("want dbErr, got %v", err)
 	}
 }
+
 func TestUsecase_Create_IdempotencyRepeat(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-
 	repo := NewMocktripRepository(ctrl)
 	tx := NewMocktxManager(ctrl)
 	metrics := NewMockbusinessMetrics(ctrl)
-
 	key := uuid.New()
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
 	tripID := uuid.New()
-
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
 	repo.EXPECT().GetIdempotencyKey(gomock.Any(), key).Return(&model.IdempotencyRecord{
@@ -131,10 +112,8 @@ func TestUsecase_Create_IdempotencyRepeat(t *testing.T) {
 		RequestHash: hashOf(in),
 	}, nil)
 	repo.EXPECT().GetByID(gomock.Any(), tripID).Return(&model.Trip{ID: tripID}, nil)
-
-	u := uc.New(repo, tx, metrics)
+	u := uc.New(repo, tx, metrics, testLog)
 	trip, repeated, err := u.Do(context.Background(), in, &key)
-
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

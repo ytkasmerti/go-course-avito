@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"uuid"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/ytkasmerti/go-course-avito/internal/config"
 	domaintrip "github.com/ytkasmerti/go-course-avito/internal/domain/trip"
@@ -56,9 +56,9 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 		return nil, fmt.Errorf("init business metrics: %w", err)
 	}
 
-	createUsecase := createUC.New(repo, txManager, bizMetrics)
+	createUsecase := createUC.New(repo, txManager, bizMetrics, tel.Logger)
 	getUsecase := getUC.New(repo)
-	finishUsecase := finishUC.New(repo, txManager, bizMetrics)
+	finishUsecase := finishUC.New(repo, txManager, bizMetrics, tel.Logger)
 
 	createH := createHandler.New(createUsecase)
 	getH := getHandler.New(getUsecase)
@@ -66,7 +66,7 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 
 	router := chi.NewRouter()
 
-	metricsMiddleware, err := middleware.Metrics()
+	metricsMiddleware, err := middleware.Metrics(router)
 	if err != nil {
 		pool.Close()
 		_ = tel.Shutdown(ctx)
@@ -74,7 +74,7 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 	}
 
 	router.Use(middleware.Recover(tel.Logger))
-	router.Use(middleware.Tracing())
+	router.Use(middleware.Tracing(router))
 	router.Use(middleware.Logging(tel.Logger))
 	router.Use(metricsMiddleware)
 
@@ -119,17 +119,15 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 		})
 	})
 
-	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	router.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(api.HealthResponse{Status: api.Ok})
 	})
 
 	router.Get("/ready", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
 		pingCtx, cancel := context.WithTimeout(r.Context(), cfg.DatabaseQueryTimeout)
 		defer cancel()
-
 		if err := pool.Ping(pingCtx); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(api.HealthResponse{Status: api.Unavailable})

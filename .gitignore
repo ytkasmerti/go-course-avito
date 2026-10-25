@@ -6,3 +6,6 @@
 bin/
 
 .DS_Store
+
+load.sh
+coverage.out

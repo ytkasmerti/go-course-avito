@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,10 +31,11 @@ type Usecase struct {
 	repo    tripRepository
 	tx      txManager
 	metrics businessMetrics
+	log     *slog.Logger
 }
 
-func New(repo tripRepository, tx txManager, metrics businessMetrics) *Usecase {
-	return &Usecase{repo: repo, tx: tx, metrics: metrics}
+func New(repo tripRepository, tx txManager, metrics businessMetrics, log *slog.Logger) *Usecase {
+	return &Usecase{repo: repo, tx: tx, metrics: metrics, log: log}
 }
 
 func (u *Usecase) Do(ctx context.Context, in Input, idemKey *uuid.UUID) (*model.Trip, bool, error) {
@@ -43,7 +45,6 @@ func (u *Usecase) Do(ctx context.Context, in Input, idemKey *uuid.UUID) (*model.
 	}
 
 	hash := hashInput(in)
-
 	var (
 		result   *model.Trip
 		repeated bool
@@ -73,14 +74,12 @@ func (u *Usecase) Do(ctx context.Context, in Input, idemKey *uuid.UUID) (*model.
 			}
 			return err
 		}
-
 		if err := u.repo.SaveIdempotencyKey(ctx, *idemKey, hash, t.ID, idempotencyTTL); err != nil {
 			if errors.Is(err, domaintrip.ErrIdempotencyRace) {
 				return domaintrip.ErrIdempotencyRace
 			}
 			return err
 		}
-
 		result = t
 		return nil
 	})
@@ -137,11 +136,11 @@ func (u *Usecase) insertTrip(ctx context.Context, in Input) (*model.Trip, error)
 		Status:         string(domaintrip.StatusActive),
 		StartedAt:      time.Now().UTC(),
 	}
-
 	if err := u.repo.Create(ctx, *t); err != nil {
 		return nil, err
 	}
 	u.metrics.IncCreated(ctx)
+	u.log.InfoContext(ctx, "trip created", slog.String("trip_id", t.ID.String()))
 	return t, nil
 }
 

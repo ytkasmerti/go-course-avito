@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	domaintrip "github.com/ytkasmerti/go-course-avito/internal/domain/trip"
+	"github.com/ytkasmerti/go-course-avito/internal/infra/postgres/transaction"
 	"github.com/ytkasmerti/go-course-avito/internal/model"
 	repoTrip "github.com/ytkasmerti/go-course-avito/internal/repository/trip"
 )
@@ -31,15 +32,11 @@ func newPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func TestRepo_Create_Success(t *testing.T) {
-	pool := newPool(t)
-	repo := repoTrip.New(pool)
-	ctx := context.Background()
-
-	tr := model.Trip{
+func newTrip(driverID uuid.UUID) model.Trip {
+	return model.Trip{
 		ID:             uuid.New(),
 		UserID:         uuid.New(),
-		DriverID:       uuid.New(),
+		DriverID:       driverID,
 		StartLatitude:  59.9,
 		StartLongitude: 30.3,
 		EndLatitude:    59.8,
@@ -48,13 +45,39 @@ func TestRepo_Create_Success(t *testing.T) {
 		Status:         string(domaintrip.StatusActive),
 		StartedAt:      time.Now(),
 	}
+}
 
+func cleanup(t *testing.T, pool *pgxpool.Pool, tripID uuid.UUID) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, "DELETE FROM trip_status_history WHERE trip_id = $1", tripID)
+		_, _ = pool.Exec(ctx, "DELETE FROM trips WHERE id = $1", tripID)
+	})
+}
+
+func rowCounts(t *testing.T, pool *pgxpool.Pool, tripID uuid.UUID) (trips, history int) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM trips WHERE id = $1", tripID).Scan(&trips); err != nil {
+		t.Fatalf("count trips: %v", err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM trip_status_history WHERE trip_id = $1", tripID).Scan(&history); err != nil {
+		t.Fatalf("count history: %v", err)
+	}
+	return trips, history
+}
+
+func TestRepo_Create_Success(t *testing.T) {
+	pool := newPool(t)
+	repo := repoTrip.New(pool)
+	ctx := context.Background()
+
+	tr := newTrip(uuid.New())
+	cleanup(t, pool, tr.ID)
 	if err := repo.Create(ctx, tr); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, "DELETE FROM trips WHERE id = $1", tr.ID)
-	})
 
 	got, err := repo.GetByID(ctx, tr.ID)
 	if err != nil {
@@ -71,27 +94,14 @@ func TestRepo_Create_DriverBusy(t *testing.T) {
 	ctx := context.Background()
 
 	driverID := uuid.New()
-	t1 := model.Trip{
-		ID:             uuid.New(),
-		UserID:         uuid.New(),
-		DriverID:       driverID,
-		StartLatitude:  59.9,
-		StartLongitude: 30.3,
-		EndLatitude:    59.8,
-		EndLongitude:   30.2,
-		Price:          1450,
-		Status:         string(domaintrip.StatusActive),
-		StartedAt:      time.Now(),
-	}
+	t1 := newTrip(driverID)
+	cleanup(t, pool, t1.ID)
 	if err := repo.Create(ctx, t1); err != nil {
 		t.Fatalf("create t1: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, "DELETE FROM trips WHERE id = $1", t1.ID)
-	})
 
-	t2 := t1
-	t2.ID = uuid.New()
+	t2 := newTrip(driverID)
+	cleanup(t, pool, t2.ID)
 	err := repo.Create(ctx, t2)
 	if !errors.Is(err, domaintrip.ErrDriverBusy) {
 		t.Fatalf("want ErrDriverBusy, got %v", err)
@@ -103,15 +113,11 @@ func TestRepo_Finish_Success(t *testing.T) {
 	repo := repoTrip.New(pool)
 	ctx := context.Background()
 
-	tr := model.Trip{
-		ID: uuid.New(), UserID: uuid.New(), DriverID: uuid.New(),
-		StartLatitude: 59.9, StartLongitude: 30.3, EndLatitude: 59.8, EndLongitude: 30.2,
-		Price: 1450, Status: string(domaintrip.StatusActive), StartedAt: time.Now(),
-	}
+	tr := newTrip(uuid.New())
+	cleanup(t, pool, tr.ID)
 	if err := repo.Create(ctx, tr); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM trips WHERE id = $1", tr.ID) })
 
 	got, err := repo.Finish(ctx, tr.ID)
 	if err != nil {
@@ -132,21 +138,17 @@ func TestRepo_IdempotencyKey(t *testing.T) {
 	repo := repoTrip.New(pool)
 	ctx := context.Background()
 
-	tr := model.Trip{
-		ID: uuid.New(), UserID: uuid.New(), DriverID: uuid.New(),
-		StartLatitude: 59.9, StartLongitude: 30.3, EndLatitude: 59.8, EndLongitude: 30.2,
-		Price: 1450, Status: string(domaintrip.StatusActive), StartedAt: time.Now(),
-	}
+	tr := newTrip(uuid.New())
+	cleanup(t, pool, tr.ID)
 	if err := repo.Create(ctx, tr); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM trips WHERE id = $1", tr.ID) })
 
 	key := uuid.New()
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM idempotency_keys WHERE key = $1", key) })
 	if err := repo.SaveIdempotencyKey(ctx, key, "hash", tr.ID, time.Hour); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM idempotency_keys WHERE key = $1", key) })
 
 	got, err := repo.GetIdempotencyKey(ctx, key)
 	if err != nil {
@@ -159,5 +161,51 @@ func TestRepo_IdempotencyKey(t *testing.T) {
 	err = repo.SaveIdempotencyKey(ctx, key, "hash", tr.ID, time.Hour)
 	if !errors.Is(err, domaintrip.ErrIdempotencyRace) {
 		t.Fatalf("want ErrIdempotencyRace, got %v", err)
+	}
+}
+
+func TestRepo_Create_TxCommitWritesBothTables(t *testing.T) {
+	pool := newPool(t)
+	repo := repoTrip.New(pool)
+	txManager := transaction.New(pool)
+	ctx := context.Background()
+
+	tr := newTrip(uuid.New())
+	cleanup(t, pool, tr.ID)
+	err := txManager.Do(ctx, func(ctx context.Context) error {
+		return repo.Create(ctx, tr)
+	})
+	if err != nil {
+		t.Fatalf("tx: %v", err)
+	}
+
+	trips, history := rowCounts(t, pool, tr.ID)
+	if trips != 1 || history != 1 {
+		t.Fatalf("after commit: trips=%d history=%d, want 1 and 1", trips, history)
+	}
+}
+
+func TestRepo_Create_TxRollbackRevertsBothTables(t *testing.T) {
+	pool := newPool(t)
+	repo := repoTrip.New(pool)
+	txManager := transaction.New(pool)
+	ctx := context.Background()
+
+	tr := newTrip(uuid.New())
+	cleanup(t, pool, tr.ID)
+	errAbort := errors.New("abort after insert")
+	err := txManager.Do(ctx, func(ctx context.Context) error {
+		if err := repo.Create(ctx, tr); err != nil {
+			return err
+		}
+		return errAbort
+	})
+	if !errors.Is(err, errAbort) {
+		t.Fatalf("want errAbort, got %v", err)
+	}
+
+	trips, history := rowCounts(t, pool, tr.ID)
+	if trips != 0 || history != 0 {
+		t.Fatalf("after rollback: trips=%d history=%d, want 0 and 0", trips, history)
 	}
 }

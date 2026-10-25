@@ -18,7 +18,6 @@ type httpMetrics struct {
 
 func newHTTPMetrics() (*httpMetrics, error) {
 	meter := otel.Meter("trip-service/http")
-
 	duration, err := meter.Float64Histogram(
 		"http.server.request.duration",
 		metric.WithUnit("s"),
@@ -27,45 +26,34 @@ func newHTTPMetrics() (*httpMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	active, err := meter.Int64UpDownCounter(
 		"http.server.active_requests",
+		metric.WithUnit("{request}"),
 		metric.WithDescription("HTTP requests in flight"),
 	)
 	if err != nil {
 		return nil, err
 	}
-
 	return &httpMetrics{duration: duration, active: active}, nil
 }
 
-func Metrics() (func(http.Handler) http.Handler, error) {
+func Metrics(routes chi.Routes) (func(http.Handler) http.Handler, error) {
 	m, err := newHTTPMetrics()
 	if err != nil {
 		return nil, err
 	}
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			active := metric.WithAttributes(attribute.String("http.request.method", r.Method))
+			method := attribute.String("http.request.method", r.Method)
+			route := attribute.String("http.route", matchRoute(routes, r))
+			active := metric.WithAttributes(method, route)
 			m.active.Add(r.Context(), 1, active)
 			defer m.active.Add(r.Context(), -1, active)
-
 			start := time.Now()
 			ww := chiMiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(ww, r)
-
-			route := "unmatched"
-			if rc := chi.RouteContext(r.Context()); rc != nil && rc.RoutePattern() != "" {
-				route = rc.RoutePattern()
-			}
-
 			m.duration.Record(r.Context(), time.Since(start).Seconds(),
-				metric.WithAttributes(
-					attribute.String("http.request.method", r.Method),
-					attribute.String("http.route", route),
-					attribute.Int("http.response.status_code", ww.Status()),
-				))
+				metric.WithAttributes(method, route, attribute.Int("http.response.status_code", ww.Status())))
 		})
 	}, nil
 }
