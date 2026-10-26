@@ -1,24 +1,28 @@
 # Trip Service
+
 ## Требования
+- Docker (запущенный), Go 1.27+, make, psql, jq
+-  tripgoctl (https://github.com/course-go-autumn-2026/course-infra)
+- macOS или Linux. На Windows работать через WSL 2 с запущенным Docker Desktop
+Все команды выполняются из корня проекта. Адреса Jaeger, Grafana и Prometheus: `tripgoctl connect`.
 
-- Go 1.27+
-- tripgoctl (https://github.com/course-go-autumn-2026/course-infra)
-- make, psql, jq
-
-## Запуск
-
+## Локальный запуск
 ```bash
-tripgoctl cluster start
-tripgoctl environment start
-set -a; source .env; set +a
+tripgoctl cluster start          # один раз на машине
+tripgoctl environment start      # создает .env с адресами БД и коллектора
+set -a; source .env.example; source .env; set +a
 make migrate
 make run
 ```
+Остановка сервиса: `Ctrl+C`
 
-### Запуск в Docker
+## Запуск в Docker
 ```bash
-docker build -f deploy/Dockerfile -t trip-service:local .
+tripgoctl cluster start          # один раз на машине
+tripgoctl environment start
 set -a; source .env; set +a
+make migrate
+docker build -f deploy/Dockerfile -t trip-service:local .
 docker run --rm -p 8080:8080 \
   -e HTTP_ADDR=:8080 \
   -e DATABASE_URL="$(echo "$DATABASE_URL" | sed 's/localhost/host.docker.internal/')" \
@@ -28,13 +32,15 @@ docker run --rm -p 8080:8080 \
   -e DATABASE_MAX_CONNS=10 -e DATABASE_MIN_CONNS=2 \
   -e DATABASE_MAX_CONN_LIFETIME=30m \
   -e DATABASE_CONNECT_TIMEOUT=5s -e DATABASE_QUERY_TIMEOUT=3s \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT="$(echo "$OTEL_EXPORTER_OTLP_ENDPOINT" | sed 's/localhost/host.docker.internal/')" \
   trip-service:local
 ```
+Остановка сервиса: `Ctrl+C`
 
 ## Переменные окружения
-Все переменные перечислены в .env.example
+Все переменные перечислены в `.env.example`. Адреса БД и коллектора приходят в `.env` от `tripgoctl`. При запуске в Docker остальные переменные передаются через `-e`.
 
-# Лабараторная работа 1 
+# Лабораторная работа 1 
 ## Решения:
 - Уровень изоляции — ReadCommitted. Это дефолт PostgreSQL и для данных задач его достаточно.
 Запрет двух активных поездок у водителя держится не на уровне изоляции, и для завершения поездки тоже не нужен более строгий уровень: UPDATE атомарен сам по себе и если параллельный запрос уже перевел поездку в completed, второй UPDATE просто не найдет строку
@@ -55,8 +61,7 @@ docker run --rm -p 8080:8080 \
 - Идемпотентность POST /api/v1/trips по заголовку Idempotency-Key. Первый запрос с ключом — 201, повтор с тем же ключом и телом — 200 и та же поездка, тот же ключ с другим телом — 409 idempotency_conflict. Без заголовка — обычные 201. Ключ и поездка пишутся в одной транзакции, TTL ключа — 24 часа, после этого запись не читается.
 - Dockerfile с многостадийной сборкой: build на golang:1.27-alpine, итоговый образ на gcr.io/distroless/static-debian12:nonroot, без исходников и тулчейна, процесс от nonroot. Размер итогового образа — 4.93 МБ.
 
-# Лабараторная работа 2
-
+# Лабораторная работа 2
 ## Архитектура
 Зависимости направлены внутрь: транспорт и репозитории - usecase - домен. Домен не знает ни про кого
 
@@ -79,10 +84,28 @@ docker run --rm -p 8080:8080 \
 ## Тесты и линтер
 ```bash
 make test               # unit, -race, печатает итоговое покрытие
-make test-integration   # нужна БД: DATABASE_URL из .env
+make test-integration   # нужны окружение, make migrate и загруженный .env (set -a; source .env; set +a)
 make lint
 ```
 
 ## Observability
 Логи: slog, JSON, stdout, trace_id и span_id в каждой записи внутри спана.
 Метрики и трейсы: OpenTelemetry, экспорт по OTLP в коллектор. http.route только шаблон маршрута.
+
+## Мутационное тестирование (задача со звездочкой)
+Инструмент: gremlins.
+
+```bash
+gremlins unleash ./internal/domain/
+gremlins unleash ./internal/usecase/
+```
+
+До добавления тестов:
+- domain: Killed 1, Lived 0, Not covered 2 (mutator coverage 33,33%)
+- usecase: Killed 10, Lived 0, Not covered 11 (mutator coverage 47,62%)
+
+После:
+- domain: Killed 3, Lived 0, Not covered 0 (100%)
+- usecase: Killed 20, Lived 0, Not covered 1 (95,24%)
+
+Оставшийся мутант: NOT COVERED usecase.go:18:27, "24 * time.Hour" в объявлении const. Объявление константы не содержит исполняемых statements, поэтому в профиле покрытия его нет и gremlins его не запускает. Значение проверяется тестом "TestDo_Idempotent_FirstRequest_SavesKeyFor24h".
