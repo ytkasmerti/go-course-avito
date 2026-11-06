@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/ytkasmerti/go-course-avito/internal/config"
 	"github.com/ytkasmerti/go-course-avito/internal/db"
@@ -30,13 +31,16 @@ func main() {
 	}
 	defer pool.Close()
 
-	txManager := txmanager.New(pool)
-	repo := trip.NewRepository(pool)
+	txManager := txmanager.New(pool, cfg.DatabaseQueryTimeout)
+	repo := trip.NewRepository(pool, cfg.DatabaseQueryTimeout)
 	service := trip.NewService(repo, txManager)
-	handler := trip.NewHandler(service, pool, log.Default())
+	handler := trip.NewHandler(service, pool, log.Default(), cfg.DatabaseQueryTimeout)
 
 	router := chi.NewRouter()
-	api.HandlerFromMux(handler, router)
+	api.HandlerWithOptions(handler, api.ChiServerOptions{
+		BaseRouter:       router,
+		ErrorHandlerFunc: handler.HandleParamError,
+	})
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

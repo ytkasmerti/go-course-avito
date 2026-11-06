@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	api "github.com/ytkasmerti/go-course-avito/internal/generated"
 )
@@ -16,36 +17,26 @@ type Pinger interface {
 
 type Handler struct {
 	api.Unimplemented
-	svc  *Service
-	pool Pinger
-	log  *log.Logger
+	svc         *Service
+	pool        Pinger
+	log         *log.Logger
+	pingTimeout time.Duration
 }
 
-func NewHandler(svc *Service, pool interface {
-	Ping(ctx context.Context) error
-}, log *log.Logger) *Handler {
-	return &Handler{svc: svc, pool: pool, log: log}
+func NewHandler(svc *Service, pool Pinger, log *log.Logger, pingTimeout time.Duration) *Handler {
+	return &Handler{svc: svc, pool: pool, log: log, pingTimeout: pingTimeout}
 }
 
 // POST /api/v1/trips
 func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, params api.CreateTripParams) {
-	var body api.CreateTripJSONRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		h.problem(w, r, http.StatusBadRequest, "invalid_request", "Invalid request", "failed to decode body")
+	in, err := decodeCreateTrip(w, r)
+	if err != nil {
+		h.problem(w, r, http.StatusBadRequest, "invalid_request", "Invalid request", err.Error())
 		return
 	}
 
-	in := CreateInput{
-		UserID:         body.UserId,
-		DriverID:       body.DriverId,
-		StartLatitude:  body.StartPoint.Latitude,
-		StartLongitude: body.StartPoint.Longitude,
-		EndLatitude:    body.EndPoint.Latitude,
-		EndLongitude:   body.EndPoint.Longitude,
-		Price:          body.Price,
-	}
-
 	t, repeated, err := h.svc.Create(r.Context(), in, params.IdempotencyKey)
+
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -96,7 +87,11 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 // GET /ready
 func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := h.pool.Ping(r.Context()); err != nil {
+
+	ctx, cancel := context.WithTimeout(r.Context(), h.pingTimeout)
+	defer cancel()
+
+	if err := h.pool.Ping(ctx); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(api.HealthResponse{Status: "unavailable"})
 		return
@@ -150,4 +145,8 @@ func toAPI(t *Trip) api.Trip {
 		StartedAt:  t.StartedAt,
 		FinishedAt: t.FinishedAt,
 	}
+}
+
+func (h *Handler) HandleParamError(w http.ResponseWriter, r *http.Request, err error) {
+	h.problem(w, r, http.StatusBadRequest, "invalid_request", "Invalid request", err.Error())
 }

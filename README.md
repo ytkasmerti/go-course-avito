@@ -67,6 +67,12 @@ docker run --rm -p 8080:8080 \
 - Сервер на net/http + chi, таймауты ReadTimeout, ReadHeaderTimeout, WriteTimeout, IdleTimeout (добавлены в конфиг из .env). Graceful shutdown по SIGINT/SIGTERM в пределах SHUTDOWN_TIMEOUT.
 
 ## Задачи со звёздочкой:
-- Идемпотентность POST /api/v1/trips по заголовку Idempotency-Key. Первый запрос с ключом — 201, повтор с тем же ключом и телом — 200 и та же поездка, тот же ключ с другим телом — 409 idempotency_conflict. Без заголовка — обычные 201. Ключ и поездка пишутся в одной транзакции, TTL ключа — 24 часа, после этого запись не читается.
+- Идемпотентность POST /api/v1/trips по заголовку Idempotency-Key. Первый запрос с ключом — 201, повтор с тем же ключом и телом — 200 и та же поездка, тот же ключ с другим телом — 409 idempotency_conflict. Без заголовка — обычные 201. Ключ и поездка пишутся в одной транзакции. TTL ключа — 24 часа. Просроченный ключ при повторном использовании атомарно заменяется, поэтому повтор после TTL создает новую поездку, а не получает ложный driver_busy.
 
 - Dockerfile с многостадийной сборкой: build на golang:1.27-alpine, итоговый образ на gcr.io/distroless/static-debian12:nonroot, без исходников и тулчейна, процесс от nonroot. Размер итогового образа — 4.93 МБ.
+
+## Исправления:
+- Валидация тела POST /trips до обращения к БД: обязательные поля, ненулевые UUID, диапазоны координат, price >= 0, запрет неизвестных полей и данных после JSON. Всё это даёт 400 invalid_request. Ошибки разбора tripId и Idempotency-Key тоже отдаются как application/problem+json.
+- Конфиг: все таймауты и время жизни соединения > 0, DATABASE_MAX_CONNS > 0, 0 <= DATABASE_MIN_CONNS <= DATABASE_MAX_CONNS; при ошибке сервис не стартует с указанием переменной.
+- DATABASE_QUERY_TIMEOUT ограничивает каждый запрос репозитория, BEGIN/COMMIT и Ping в /ready.
+- При завершении поездки запись active → completed пишется в trip_status_history в той же транзакции, что и UPDATE.

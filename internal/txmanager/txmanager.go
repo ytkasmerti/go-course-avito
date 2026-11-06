@@ -3,6 +3,8 @@ package txmanager
 import (
 	"context"
 	"fmt"
+	"time"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -12,25 +14,28 @@ type TxManager interface {
 }
 
 type Manager struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	timeout time.Duration
 }
 
-type ctxKey struct {}
+type ctxKey struct{}
 
-func New(pool *pgxpool.Pool) TxManager {
-	return &Manager {pool : pool}
+func New(pool *pgxpool.Pool, timeout time.Duration) TxManager {
+	return &Manager{pool: pool, timeout: timeout}
 }
 
 func (m *Manager) Do(ctx context.Context, fn func(ctx context.Context) error) error {
-	//Проверка, есть ли ранзакция в контексте
-	if _, ok := TxFromContext(ctx); ok{
+	//Проверка, есть ли транзакция в контексте
+	if _, ok := TxFromContext(ctx); ok {
 		return fn(ctx)
 	}
 
-	//Открытие транзакцию
-	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{
+	//Открытие транзакции
+	beginCtx, cancelBegin := context.WithTimeout(ctx, m.timeout)
+	tx, err := m.pool.BeginTx(beginCtx, pgx.TxOptions{
 		IsoLevel: pgx.ReadCommitted,
 	})
+	cancelBegin()
 	if err != nil {
 		return fmt.Errorf("Begin tx: %w", err)
 	}
@@ -52,11 +57,12 @@ func (m *Manager) Do(ctx context.Context, fn func(ctx context.Context) error) er
 		return err
 	}
 
-	//Закрытие транзакции
-	if err := tx.Commit(ctx); err != nil {
+	//Коммит
+	commitCtx, cancelCommit := context.WithTimeout(ctx, m.timeout)
+	defer cancelCommit()
+	if err := tx.Commit(commitCtx); err != nil {
 		return fmt.Errorf("Commit tx: %w", err)
 	}
-
 	return nil
 }
 

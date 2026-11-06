@@ -11,12 +11,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/ytkasmerti/go-course-avito/internal/txmanager"
 )
 
 type Repository struct {
-	pool *pgxpool.Pool
+	pool         *pgxpool.Pool
+	queryTimeout time.Duration
 }
 
 type IdempotencyRecord struct {
@@ -24,11 +24,11 @@ type IdempotencyRecord struct {
 	RequestHash string
 }
 
-func NewRepository(pool *pgxpool.Pool) *Repository {
-	return &Repository{pool: pool}
+func NewRepository(pool *pgxpool.Pool, queryTimeout time.Duration) *Repository {
+	return &Repository{pool: pool, queryTimeout: queryTimeout}
 }
 
-// если есть транзакция в контексте, возвращаем ее, иначе возрващаем пул
+// если есть транзакция в контексте, возвращаем ее, иначе возвращаем пул
 func (r *Repository) querier(ctx context.Context) interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
@@ -37,6 +37,18 @@ func (r *Repository) querier(ctx context.Context) interface {
 		return tx
 	}
 	return r.pool
+}
+
+func (r *Repository) exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+	return r.querier(ctx).Exec(ctx, sql, args...)
+}
+
+func (r *Repository) queryRowScan(ctx context.Context, sql string, args []any, dest ...any) error {
+	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+	return r.querier(ctx).QueryRow(ctx, sql, args...).Scan(dest...)
 }
 
 func (r *Repository) Create(ctx context.Context, t *Trip) error {
@@ -50,12 +62,13 @@ func (r *Repository) Create(ctx context.Context, t *Trip) error {
 			t.EndLatitude, t.EndLongitude,
 			t.Price, t.Status, t.StartedAt).
 		PlaceholderFormat(sq.Dollar)
+
 	sql, args, err := insertTrip.ToSql()
 	if err != nil {
 		return fmt.Errorf("Build insert trip: %w", err)
 	}
 
-	if _, err := r.querier(ctx).Exec(ctx, sql, args...); err != nil {
+	if _, err := r.exec(ctx, sql, args...); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "trips_driver_active_uniq" {
 			return ErrDriverBusy
@@ -72,7 +85,8 @@ func (r *Repository) Create(ctx context.Context, t *Trip) error {
 	if err != nil {
 		return fmt.Errorf("Build insert history: %w", err)
 	}
-	if _, err := r.querier(ctx).Exec(ctx, sql, args...); err != nil {
+
+	if _, err := r.exec(ctx, sql, args...); err != nil {
 		return fmt.Errorf("Insert history: %w", err)
 	}
 	return nil
@@ -86,13 +100,14 @@ func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*Trip, error) {
 		From("trips").
 		Where(sq.Eq{"id": id}).
 		PlaceholderFormat(sq.Dollar)
+
 	sql, args, err := q.ToSql()
 	if err != nil {
 		return nil, fmt.Errorf("Build select: %w", err)
 	}
 
 	var t Trip
-	err = r.querier(ctx).QueryRow(ctx, sql, args...).Scan(
+	err = r.queryRowScan(ctx, sql, args,
 		&t.ID, &t.UserID, &t.DriverID,
 		&t.StartLatitude, &t.StartLongitude,
 		&t.EndLatitude, &t.EndLongitude,
@@ -119,11 +134,25 @@ func (r *Repository) Finish(ctx context.Context, id uuid.UUID) (*Trip, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Build update: %w", err)
 	}
-	tag, err := r.querier(ctx).Exec(ctx, sql, args...)
+
+	tag, err := r.exec(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("Update trip: %w", err)
 	}
+
 	if tag.RowsAffected() == 1 {
+		insertHistory := sq.Insert("trip_status_history").
+			Columns("trip_id", "from_status", "to_status", "reason").
+			Values(id, string(StatusActive), string(StatusCompleted), "trip finished").
+			PlaceholderFormat(sq.Dollar)
+
+		hSQL, hArgs, err := insertHistory.ToSql()
+		if err != nil {
+			return nil, fmt.Errorf("Build insert history: %w", err)
+		}
+		if _, err := r.exec(ctx, hSQL, hArgs...); err != nil {
+			return nil, fmt.Errorf("Insert history: %w", err)
+		}
 		return r.GetByID(ctx, id)
 	}
 
@@ -134,7 +163,6 @@ func (r *Repository) Finish(ctx context.Context, id uuid.UUID) (*Trip, error) {
 	if existing.Status == StatusCompleted {
 		return nil, ErrTripCompleted
 	}
-
 	return nil, ErrTripNotFound
 }
 
@@ -144,13 +172,14 @@ func (r *Repository) GetIdempotencyKey(ctx context.Context, key uuid.UUID) (*Ide
 		Where(sq.Eq{"key": key}).
 		Where("expires_at > now()").
 		PlaceholderFormat(sq.Dollar)
+
 	sql, args, err := q.ToSql()
 	if err != nil {
 		return nil, fmt.Errorf("Build select idempotency: %w", err)
 	}
 
 	var rec IdempotencyRecord
-	err = r.querier(ctx).QueryRow(ctx, sql, args...).Scan(&rec.TripID, &rec.RequestHash)
+	err = r.queryRowScan(ctx, sql, args, &rec.TripID, &rec.RequestHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -163,19 +192,26 @@ func (r *Repository) GetIdempotencyKey(ctx context.Context, key uuid.UUID) (*Ide
 func (r *Repository) SaveIdempotencyKey(ctx context.Context, key uuid.UUID, hash string, tripID uuid.UUID, ttl time.Duration) error {
 	q := sq.Insert("idempotency_keys").
 		Columns("key", "request_hash", "trip_id", "expires_at").
-		Values(key, hash, tripID, time.Now().Add(ttl)).
+		Values(key, hash, tripID, sq.Expr("now() + make_interval(secs => ?::double precision)", ttl.Seconds())).
+		Suffix(`ON CONFLICT (key) DO UPDATE SET
+			request_hash = EXCLUDED.request_hash,
+			trip_id      = EXCLUDED.trip_id,
+			created_at   = now(),
+			expires_at   = EXCLUDED.expires_at
+			WHERE idempotency_keys.expires_at <= now()`).
 		PlaceholderFormat(sq.Dollar)
+
 	sql, args, err := q.ToSql()
 	if err != nil {
 		return fmt.Errorf("Build insert idempotency: %w", err)
 	}
 
-	if _, err := r.querier(ctx).Exec(ctx, sql, args...); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idempotency_keys_pkey" {
-			return ErrIdempotencyRace
-		}
+	tag, err := r.exec(ctx, sql, args...)
+	if err != nil {
 		return fmt.Errorf("Insert idempotency: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrIdempotencyRace
 	}
 	return nil
 }
