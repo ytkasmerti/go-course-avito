@@ -13,6 +13,7 @@ import (
 	uc "github.com/ytkasmerti/go-course-avito/internal/usecase/trip/get"
 )
 
+// Проверяет получение поездки
 func TestUsecase_Get_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -31,6 +32,7 @@ func TestUsecase_Get_Success(t *testing.T) {
 	}
 }
 
+// Проверяет 404
 func TestUsecase_Get_NotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

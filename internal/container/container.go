@@ -2,19 +2,17 @@ package container
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
 	"github.com/ytkasmerti/go-course-avito/internal/config"
-	domaintrip "github.com/ytkasmerti/go-course-avito/internal/domain/trip"
 	api "github.com/ytkasmerti/go-course-avito/internal/generated"
 	"github.com/ytkasmerti/go-course-avito/internal/http/domainerror"
 	"github.com/ytkasmerti/go-course-avito/internal/http/middleware"
+	httpserver "github.com/ytkasmerti/go-course-avito/internal/http/server"
 	createHandler "github.com/ytkasmerti/go-course-avito/internal/http/trip/create"
 	finishHandler "github.com/ytkasmerti/go-course-avito/internal/http/trip/finish"
 	getHandler "github.com/ytkasmerti/go-course-avito/internal/http/trip/get"
@@ -46,8 +44,8 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 		return nil, fmt.Errorf("init pool: %w", err)
 	}
 
-	txManager := transaction.New(pool)
-	repo := repoTrip.New(pool)
+	txManager := transaction.New(pool, cfg.DatabaseQueryTimeout)
+	repo := repoTrip.New(pool, cfg.DatabaseQueryTimeout)
 
 	bizMetrics, err := telemetry.NewBusinessMetrics()
 	if err != nil {
@@ -60,80 +58,25 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 	getUsecase := getUC.New(repo)
 	finishUsecase := finishUC.New(repo, txManager, bizMetrics, tel.Logger)
 
-	createH := createHandler.New(createUsecase)
-	getH := getHandler.New(getUsecase)
-	finishH := finishHandler.New(finishUsecase)
+	createH := createHandler.New(createUsecase, tel.Logger)
+	getH := getHandler.New(getUsecase, tel.Logger)
+	finishH := finishHandler.New(finishUsecase, tel.Logger)
 
 	router := chi.NewRouter()
 
-	metricsMiddleware, err := middleware.Metrics(router)
+	chain, err := middleware.Chain(router, tel.Logger)
 	if err != nil {
 		pool.Close()
 		_ = tel.Shutdown(ctx)
-		return nil, fmt.Errorf("init metrics: %w", err)
+		return nil, fmt.Errorf("init middleware: %w", err)
 	}
+	router.Use(chain...)
 
-	router.Use(middleware.Recover(tel.Logger))
-	router.Use(middleware.Tracing(router))
-	router.Use(middleware.Logging(tel.Logger))
-	router.Use(metricsMiddleware)
-
-	router.Group(func(r chi.Router) {
-		r.Post("/api/v1/trips", func(w http.ResponseWriter, r *http.Request) {
-			var params api.CreateTripParams
-			if raw := r.Header.Get("Idempotency-Key"); raw != "" {
-				var id uuid.UUID
-				if err := id.UnmarshalText([]byte(raw)); err != nil {
-					status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "Idempotency-Key", Message: "invalid uuid"})
-					w.Header().Set("Content-Type", "application/problem+json")
-					w.WriteHeader(status)
-					_ = json.NewEncoder(w).Encode(p)
-					return
-				}
-				key := api.IdempotencyKey(id)
-				params.IdempotencyKey = &key
-			}
-			createH.Handle(w, r, params)
-		})
-		r.Get("/api/v1/trips/{tripId}", func(w http.ResponseWriter, r *http.Request) {
-			id, err := uuid.Parse(chi.URLParam(r, "tripId"))
-			if err != nil {
-				status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "tripId", Message: "invalid uuid"})
-				w.Header().Set("Content-Type", "application/problem+json")
-				w.WriteHeader(status)
-				_ = json.NewEncoder(w).Encode(p)
-				return
-			}
-			getH.Handle(w, r, api.TripId(id))
-		})
-		r.Post("/api/v1/trips/{tripId}/finish", func(w http.ResponseWriter, r *http.Request) {
-			id, err := uuid.Parse(chi.URLParam(r, "tripId"))
-			if err != nil {
-				status, p := domainerror.Problem(&domaintrip.ValidationError{Field: "tripId", Message: "invalid uuid"})
-				w.Header().Set("Content-Type", "application/problem+json")
-				w.WriteHeader(status)
-				_ = json.NewEncoder(w).Encode(p)
-				return
-			}
-			finishH.Handle(w, r, api.TripId(id))
-		})
-	})
-
-	router.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(api.HealthResponse{Status: api.Ok})
-	})
-
-	router.Get("/ready", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		pingCtx, cancel := context.WithTimeout(r.Context(), cfg.DatabaseQueryTimeout)
-		defer cancel()
-		if err := pool.Ping(pingCtx); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(api.HealthResponse{Status: api.Unavailable})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(api.HealthResponse{Status: api.Ok})
+	// Маршруты и разбор параметров: только сгенерированный адаптер
+	srv := httpserver.New(createH, getH, finishH, pool, cfg.DatabaseQueryTimeout)
+	api.HandlerWithOptions(srv, api.ChiServerOptions{
+		BaseRouter:       router,
+		ErrorHandlerFunc: domainerror.InvalidParam,
 	})
 
 	return &Container{

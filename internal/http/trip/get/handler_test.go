@@ -2,6 +2,7 @@ package get_test
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,9 @@ import (
 	"github.com/ytkasmerti/go-course-avito/internal/model"
 )
 
+var testLog = slog.New(slog.DiscardHandler)
+
+// Проверяет 200
 func TestHandlerGet_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -22,7 +26,7 @@ func TestHandlerGet_Success(t *testing.T) {
 	id := uuid.New()
 	mockUC.EXPECT().Do(gomock.Any(), id).Return(&model.Trip{ID: id}, nil)
 
-	h := handlerGet.New(mockUC)
+	h := handlerGet.New(mockUC, testLog)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/trips/"+id.String(), nil)
 	rec := httptest.NewRecorder()
 	h.Handle(rec, req, id)
@@ -32,6 +36,7 @@ func TestHandlerGet_Success(t *testing.T) {
 	}
 }
 
+// Проверяет 404
 func TestHandlerGet_NotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -40,7 +45,7 @@ func TestHandlerGet_NotFound(t *testing.T) {
 	id := uuid.New()
 	mockUC.EXPECT().Do(gomock.Any(), id).Return(nil, domaintrip.ErrTripNotFound)
 
-	h := handlerGet.New(mockUC)
+	h := handlerGet.New(mockUC, testLog)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/trips/"+id.String(), nil)
 	rec := httptest.NewRecorder()
 	h.Handle(rec, req, id)
@@ -50,6 +55,7 @@ func TestHandlerGet_NotFound(t *testing.T) {
 	}
 }
 
+// Проверяет 500
 func TestHandlerGet_InternalError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -58,7 +64,7 @@ func TestHandlerGet_InternalError(t *testing.T) {
 	id := uuid.New()
 	mockUC.EXPECT().Do(gomock.Any(), id).Return(nil, errors.New("boom"))
 
-	h := handlerGet.New(mockUC)
+	h := handlerGet.New(mockUC, testLog)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/trips/"+id.String(), nil)
 	rec := httptest.NewRecorder()
 	h.Handle(rec, req, id)

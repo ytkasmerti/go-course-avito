@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -13,10 +15,16 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("service failed", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("load config", "err", err)
-		return
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -24,8 +32,7 @@ func main() {
 
 	c, err := container.New(ctx, *cfg)
 	if err != nil {
-		slog.Error("init container", "err", err)
-		return
+		return fmt.Errorf("init container: %w", err)
 	}
 
 	server := &http.Server{
@@ -45,11 +52,12 @@ func main() {
 		}
 	}()
 
+	var serveErr error
 	select {
 	case <-ctx.Done():
 		c.Logger.Info("shutdown started")
-	case err := <-errCh:
-		c.Logger.Error("server failed", "err", err)
+	case serveErr = <-errCh:
+		c.Logger.Error("server failed", "err", serveErr)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
@@ -63,4 +71,5 @@ func main() {
 	}
 
 	c.Logger.Info("shutdown completed")
+	return serveErr
 }

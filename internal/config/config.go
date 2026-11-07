@@ -44,12 +44,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse SHUTDOWN_TIMEOUT: %w", err)
 	}
 
-	maxConns, err := strconv.Atoi(os.Getenv("DATABASE_MAX_CONNS"))
+	maxConns, err := strconv.ParseInt(os.Getenv("DATABASE_MAX_CONNS"), 10, 32)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_MAX_CONNS: %w", err)
 	}
 
-	minConns, err := strconv.Atoi(os.Getenv("DATABASE_MIN_CONNS"))
+	minConns, err := strconv.ParseInt(os.Getenv("DATABASE_MIN_CONNS"), 10, 32)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_MIN_CONNS: %w", err)
 	}
@@ -89,7 +89,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse HTTP_IDLE_TIMEOUT: %w", err)
 	}
 
-	return &Config{
+	cfg := &Config{
 		HTTPAddr:                httpAddr,
 		DatabaseURL:             dbURL,
 		LogLevel:                logLevel,
@@ -103,5 +103,48 @@ func Load() (*Config, error) {
 		HTTPReadHeaderTimeout:   httpReadHeaderTimeout,
 		HTTPWriteTimeout:        httpWriteTimeout,
 		HTTPIdleTimeout:         httpIdleTimeout,
-	}, nil
+	}
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func (c *Config) validate() error {
+	durations := []struct {
+		name string
+		v    time.Duration
+	}{
+		{"SHUTDOWN_TIMEOUT", c.ShutdownTimeout},
+		{"DATABASE_MAX_CONN_LIFETIME", c.DatabaseMaxConnLifetime},
+		{"DATABASE_CONNECT_TIMEOUT", c.DatabaseConnectTimeout},
+		{"DATABASE_QUERY_TIMEOUT", c.DatabaseQueryTimeout},
+		{"HTTP_READ_TIMEOUT", c.HTTPReadTimeout},
+		{"HTTP_READ_HEADER_TIMEOUT", c.HTTPReadHeaderTimeout},
+		{"HTTP_WRITE_TIMEOUT", c.HTTPWriteTimeout},
+		{"HTTP_IDLE_TIMEOUT", c.HTTPIdleTimeout},
+	}
+
+	for _, d := range durations {
+		if d.v <= 0 {
+			return fmt.Errorf("%s must be positive, got %s", d.name, d.v)
+		}
+	}
+
+	if c.DatabaseMaxConns <= 0 {
+		return fmt.Errorf("DATABASE_MAX_CONNS must be > 0, got %d", c.DatabaseMaxConns)
+	}
+
+	if c.DatabaseMinConns < 0 {
+		return fmt.Errorf("DATABASE_MIN_CONNS must be >= 0, got %d", c.DatabaseMinConns)
+	}
+
+	if c.DatabaseMinConns > c.DatabaseMaxConns {
+		return fmt.Errorf("DATABASE_MIN_CONNS (%d) must not exceed DATABASE_MAX_CONNS (%d)",
+			c.DatabaseMinConns, c.DatabaseMaxConns)
+	}
+
+	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	domaintrip "github.com/ytkasmerti/go-course-avito/internal/domain/trip"
@@ -19,6 +20,7 @@ import (
 
 var testLog = slog.New(slog.DiscardHandler)
 
+// Проверяет успешное создание без ключа
 func TestUsecase_Create_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -27,7 +29,8 @@ func TestUsecase_Create_Success(t *testing.T) {
 	metrics := NewMockbusinessMetrics(ctrl)
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 1450}
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
+		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+	)
 	repo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 	metrics.EXPECT().IncCreated(gomock.Any())
 	u := uc.New(repo, tx, metrics, testLog)
@@ -40,6 +43,7 @@ func TestUsecase_Create_Success(t *testing.T) {
 	}
 }
 
+// Проверяет проброс ErrDriverBusy
 func TestUsecase_Create_DriverBusy(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -48,7 +52,8 @@ func TestUsecase_Create_DriverBusy(t *testing.T) {
 	metrics := NewMockbusinessMetrics(ctrl)
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
+		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+	)
 	repo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(domaintrip.ErrDriverBusy)
 	u := uc.New(repo, tx, metrics, testLog)
 	_, _, err := u.Do(context.Background(), in, nil)
@@ -57,6 +62,7 @@ func TestUsecase_Create_DriverBusy(t *testing.T) {
 	}
 }
 
+// Проверяет 409 при другом теле с тем же ключом
 func TestUsecase_Create_IdempotencyConflict(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -66,7 +72,8 @@ func TestUsecase_Create_IdempotencyConflict(t *testing.T) {
 	key := uuid.New()
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
+		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+	)
 	repo.EXPECT().GetIdempotencyKey(gomock.Any(), key).Return(&model.IdempotencyRecord{
 		TripID:      uuid.New(),
 		RequestHash: "different-hash",
@@ -78,6 +85,7 @@ func TestUsecase_Create_IdempotencyConflict(t *testing.T) {
 	}
 }
 
+// Проверяет проброс ошибки репозитория
 func TestUsecase_Create_RepoError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -87,7 +95,8 @@ func TestUsecase_Create_RepoError(t *testing.T) {
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
 	dbErr := errors.New("db down")
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
+		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+	)
 	repo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(dbErr)
 	u := uc.New(repo, tx, metrics, testLog)
 	_, _, err := u.Do(context.Background(), in, nil)
@@ -96,6 +105,7 @@ func TestUsecase_Create_RepoError(t *testing.T) {
 	}
 }
 
+// Проверяет 200 и ту же поездку на повтор с тем же ключом
 func TestUsecase_Create_IdempotencyRepeat(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -106,7 +116,8 @@ func TestUsecase_Create_IdempotencyRepeat(t *testing.T) {
 	in := uc.Input{UserID: uuid.New(), DriverID: uuid.New(), Price: 100}
 	tripID := uuid.New()
 	tx.EXPECT().Do(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) })
+		func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) },
+	)
 	repo.EXPECT().GetIdempotencyKey(gomock.Any(), key).Return(&model.IdempotencyRecord{
 		TripID:      tripID,
 		RequestHash: hashOf(in),
@@ -134,4 +145,42 @@ func hashOf(in uc.Input) string {
 		in.Price,
 	)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Проверяет валидацию до обращения к репозиторию
+func TestDo_InvalidInput_FailsBeforeAnyDependencyCall(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	u := uc.New(NewMocktripRepository(ctrl), NewMocktxManager(ctrl), NewMockbusinessMetrics(ctrl), testLog)
+
+	valid := uc.Input{
+		UserID: uuid.New(), DriverID: uuid.New(),
+		StartLatitude: 59.9, StartLongitude: 30.3, EndLatitude: 59.8, EndLongitude: 30.2, Price: 1450,
+	}
+	tests := []struct {
+		name      string
+		mutate    func(in *uc.Input)
+		wantField string
+	}{
+		{"zero user", func(in *uc.Input) { in.UserID = uuid.Nil }, "user_id"},
+		{"zero driver", func(in *uc.Input) { in.DriverID = uuid.Nil }, "driver_id"},
+		{"latitude out of range", func(in *uc.Input) { in.StartLatitude = 91 }, "start_point.latitude"},
+		{"negative price", func(in *uc.Input) { in.Price = -1 }, "price"},
+	}
+	for _, tt := range tests {
+		for _, withKey := range []bool{false, true} {
+			t.Run(tt.name, func(t *testing.T) {
+				in := valid
+				tt.mutate(&in)
+				var key *uuid.UUID
+				if withKey {
+					k := uuid.New()
+					key = &k
+				}
+				_, _, err := u.Do(context.Background(), in, key)
+				var ve *domaintrip.ValidationError
+				require.ErrorAs(t, err, &ve)
+				require.Equal(t, tt.wantField, ve.Field)
+			})
+		}
+	}
 }

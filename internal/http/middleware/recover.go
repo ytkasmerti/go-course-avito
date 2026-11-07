@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,13 +13,17 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
-				if p := recover(); p != nil {
-					log.Error("panic", "panic", p, "stack", string(debug.Stack()))
-					status, problem := domainerror.Problem(fmt.Errorf("panic"))
-					w.Header().Set("Content-Type", "application/problem+json")
-					w.WriteHeader(status)
-					_ = json.NewEncoder(w).Encode(problem)
+				p := recover()
+				if p == nil {
+					return
 				}
+				// net/http сам прерывает ответ
+				if p == http.ErrAbortHandler {
+					panic(p)
+				}
+				log.ErrorContext(r.Context(), "panic", "panic", p, "stack", string(debug.Stack()))
+				status, problem := domainerror.Problem(fmt.Errorf("panic: %v", p))
+				domainerror.WriteProblem(w, status, problem)
 			}()
 			next.ServeHTTP(w, r)
 		})

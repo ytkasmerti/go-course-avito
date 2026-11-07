@@ -2,6 +2,7 @@ package finish_test
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,9 @@ import (
 	"github.com/ytkasmerti/go-course-avito/internal/model"
 )
 
+var testLog = slog.New(slog.DiscardHandler)
+
+// Проверяет 200 при успешном завершении
 func TestHandlerFinish_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -24,7 +28,7 @@ func TestHandlerFinish_Success(t *testing.T) {
 		ID: id, Status: string(domaintrip.StatusCompleted),
 	}, nil)
 
-	h := handlerFinish.New(mockUC)
+	h := handlerFinish.New(mockUC, testLog)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/trips/"+id.String()+"/finish", nil)
 	rec := httptest.NewRecorder()
 	h.Handle(rec, req, id)
@@ -34,6 +38,7 @@ func TestHandlerFinish_Success(t *testing.T) {
 	}
 }
 
+// Проверяет 409 на уже завершенную поездку
 func TestHandlerFinish_AlreadyCompleted(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -42,7 +47,7 @@ func TestHandlerFinish_AlreadyCompleted(t *testing.T) {
 	id := uuid.New()
 	mockUC.EXPECT().Do(gomock.Any(), id).Return(nil, domaintrip.ErrTripCompleted)
 
-	h := handlerFinish.New(mockUC)
+	h := handlerFinish.New(mockUC, testLog)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/trips/"+id.String()+"/finish", nil)
 	rec := httptest.NewRecorder()
 	h.Handle(rec, req, id)
@@ -52,6 +57,7 @@ func TestHandlerFinish_AlreadyCompleted(t *testing.T) {
 	}
 }
 
+// Проверяет 404
 func TestHandlerFinish_NotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -60,7 +66,7 @@ func TestHandlerFinish_NotFound(t *testing.T) {
 	id := uuid.New()
 	mockUC.EXPECT().Do(gomock.Any(), id).Return(nil, domaintrip.ErrTripNotFound)
 
-	h := handlerFinish.New(mockUC)
+	h := handlerFinish.New(mockUC, testLog)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/trips/"+id.String()+"/finish", nil)
 	rec := httptest.NewRecorder()
 	h.Handle(rec, req, id)
@@ -70,6 +76,7 @@ func TestHandlerFinish_NotFound(t *testing.T) {
 	}
 }
 
+// Проверяет 500
 func TestHandlerFinish_InternalError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -78,7 +85,7 @@ func TestHandlerFinish_InternalError(t *testing.T) {
 	id := uuid.New()
 	mockUC.EXPECT().Do(gomock.Any(), id).Return(nil, errors.New("boom"))
 
-	h := handlerFinish.New(mockUC)
+	h := handlerFinish.New(mockUC, testLog)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/trips/"+id.String()+"/finish", nil)
 	rec := httptest.NewRecorder()
 	h.Handle(rec, req, id)

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -13,17 +14,28 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+var errHandlerPanicked = errors.New("handler panicked")
+
 func Tracing(routes chi.Routes) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ww := chiMiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			completed := false
+			defer func() {
+				span := trace.SpanFromContext(r.Context())
+				span.SetAttributes(attribute.String("http.route", matchRoute(routes, r)))
+				status := ww.Status()
+				if !completed {
+					status = http.StatusInternalServerError
+					span.RecordError(errHandlerPanicked) // причина и стек паники в логе Recover
+				}
+				if status >= http.StatusInternalServerError {
+					span.SetStatus(codes.Error, http.StatusText(status))
+					span.SetAttributes(attribute.String("error.type", strconv.Itoa(status)))
+				}
+			}()
 			next.ServeHTTP(ww, r)
-			span := trace.SpanFromContext(r.Context())
-			span.SetAttributes(attribute.String("http.route", matchRoute(routes, r)))
-			if ww.Status() >= http.StatusInternalServerError {
-				span.SetStatus(codes.Error, http.StatusText(ww.Status()))
-				span.SetAttributes(attribute.String("error.type", strconv.Itoa(ww.Status())))
-			}
+			completed = true
 		})
 		return otelhttp.NewHandler(inner, "http.server",
 			otelhttp.WithMeterProvider(noop.NewMeterProvider()),

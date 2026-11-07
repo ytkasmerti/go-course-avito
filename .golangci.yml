@@ -114,7 +114,8 @@ formatters:
         - default
         - localmodule
     gofumpt:
-      extra-rules: true
+        group-params: true
+        clothe-returns: true
 
   exclusions:
     generated: lax

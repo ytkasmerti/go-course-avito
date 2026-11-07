@@ -38,7 +38,23 @@ func New(repo tripRepository, tx txManager, metrics businessMetrics, log *slog.L
 	return &Usecase{repo: repo, tx: tx, metrics: metrics, log: log}
 }
 
+func (in Input) validate() error {
+	return domaintrip.NewTripParams{
+		UserID:         in.UserID,
+		DriverID:       in.DriverID,
+		StartLatitude:  in.StartLatitude,
+		StartLongitude: in.StartLongitude,
+		EndLatitude:    in.EndLatitude,
+		EndLongitude:   in.EndLongitude,
+		Price:          in.Price,
+	}.Validate()
+}
+
 func (u *Usecase) Do(ctx context.Context, in Input, idemKey *uuid.UUID) (*model.Trip, bool, error) {
+	if err := in.validate(); err != nil {
+		return nil, false, err
+	}
+
 	if idemKey == nil {
 		t, err := u.createInTx(ctx, in)
 		return t, false, err
@@ -85,6 +101,7 @@ func (u *Usecase) Do(ctx context.Context, in Input, idemKey *uuid.UUID) (*model.
 	})
 
 	if errors.Is(err, domaintrip.ErrIdempotencyRace) {
+		// Проиграли гонку за ключ - ждем, пока конкурент закоммитит запись
 		for i := 0; i < 20; i++ {
 			rec, err2 := u.repo.GetIdempotencyKey(ctx, *idemKey)
 			if err2 != nil {
@@ -100,6 +117,7 @@ func (u *Usecase) Do(ctx context.Context, in Input, idemKey *uuid.UUID) (*model.
 				}
 				return t, true, nil
 			}
+			// Интервал опроса
 			time.Sleep(10 * time.Millisecond)
 		}
 		return nil, false, domaintrip.ErrDriverBusy

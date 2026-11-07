@@ -48,12 +48,22 @@ func Metrics(routes chi.Routes) (func(http.Handler) http.Handler, error) {
 			route := attribute.String("http.route", matchRoute(routes, r))
 			active := metric.WithAttributes(method, route)
 			m.active.Add(r.Context(), 1, active)
-			defer m.active.Add(r.Context(), -1, active)
+
 			start := time.Now()
 			ww := chiMiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			completed := false // отделяет нормальный выход от паники
+			// пишем статус и длительность после ответа, в том числе при панике
+			defer func() {
+				status := ww.Status()
+				if !completed {
+					status = http.StatusInternalServerError
+				}
+				m.active.Add(r.Context(), -1, active)
+				m.duration.Record(r.Context(), time.Since(start).Seconds(),
+					metric.WithAttributes(method, route, attribute.Int("http.response.status_code", status)))
+			}()
 			next.ServeHTTP(ww, r)
-			m.duration.Record(r.Context(), time.Since(start).Seconds(),
-				metric.WithAttributes(method, route, attribute.Int("http.response.status_code", ww.Status())))
+			completed = true
 		})
 	}, nil
 }

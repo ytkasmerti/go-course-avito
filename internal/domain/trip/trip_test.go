@@ -10,9 +10,9 @@ import (
 	. "github.com/ytkasmerti/go-course-avito/internal/domain/trip"
 )
 
+// Проверяет переход active - completed и ошибку для completed
 func TestTrip_Finish(t *testing.T) {
 	now := time.Now()
-
 	tests := []struct {
 		name      string
 		trip      Trip

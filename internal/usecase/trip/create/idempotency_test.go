@@ -54,6 +54,7 @@ func (f *idemFixture) record(hash string, tripID uuid.UUID) *model.IdempotencyRe
 	return &model.IdempotencyRecord{TripID: tripID, RequestHash: hash}
 }
 
+// Проверяет сохранение ключа с TTL 24 часа
 func TestDo_Idempotent_FirstRequest_SavesKeyFor24h(t *testing.T) {
 	f := newIdemFixture(t)
 	f.repo.EXPECT().GetIdempotencyKey(gomock.Any(), f.key).Return(nil, nil)
@@ -67,6 +68,7 @@ func TestDo_Idempotent_FirstRequest_SavesKeyFor24h(t *testing.T) {
 	require.NotNil(t, trip)
 }
 
+// Проверяет проброс ошибки сохранения ключа
 func TestDo_Idempotent_SaveKeyError(t *testing.T) {
 	f := newIdemFixture(t)
 	boom := errors.New("db down")
@@ -79,6 +81,7 @@ func TestDo_Idempotent_SaveKeyError(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 }
 
+// Проверяет проброс ошибки вставки поездки
 func TestDo_Idempotent_InsertError(t *testing.T) {
 	f := newIdemFixture(t)
 	boom := errors.New("db down")
@@ -90,6 +93,7 @@ func TestDo_Idempotent_InsertError(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 }
 
+// Проверяет повтор после проигранной гонки за ключ
 func TestDo_Race_FoundOnSecondPoll(t *testing.T) {
 	f := newIdemFixture(t)
 	tripID := uuid.New()
@@ -105,6 +109,7 @@ func TestDo_Race_FoundOnSecondPoll(t *testing.T) {
 	require.Equal(t, tripID, trip.ID)
 }
 
+// Проверяет 409 при другом теле в гонке
 func TestDo_Race_ConflictingHash(t *testing.T) {
 	f := newIdemFixture(t)
 	f.expectRace()
@@ -115,6 +120,7 @@ func TestDo_Race_ConflictingHash(t *testing.T) {
 	require.ErrorIs(t, err, domaintrip.ErrIdempotencyConflict)
 }
 
+// Проверяет проброс ошибки при опросе ключа
 func TestDo_Race_PollError(t *testing.T) {
 	f := newIdemFixture(t)
 	boom := errors.New("db down")
@@ -126,6 +132,7 @@ func TestDo_Race_PollError(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 }
 
+// Проверяет проброс ошибки чтения поездки в гонке
 func TestDo_Race_GetByIDError(t *testing.T) {
 	f := newIdemFixture(t)
 	boom := errors.New("db down")
@@ -139,6 +146,7 @@ func TestDo_Race_GetByIDError(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 }
 
+// Проверяет 20 попыток и возврат ErrDriverBusy
 func TestDo_Race_Exhausted_PollsExactly20Times(t *testing.T) {
 	f := newIdemFixture(t)
 	f.repo.EXPECT().GetIdempotencyKey(gomock.Any(), f.key).Return(nil, nil).Times(21)

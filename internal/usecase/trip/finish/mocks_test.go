@@ -12,6 +12,7 @@ package finish_test
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	uuid "github.com/google/uuid"
 	model "github.com/ytkasmerti/go-course-avito/internal/model"
@@ -42,21 +43,6 @@ func (m *MocktripRepository) EXPECT() *MocktripRepositoryMockRecorder {
 	return m.recorder
 }
 
-// Finish mocks base method.
-func (m *MocktripRepository) Finish(ctx context.Context, id uuid.UUID) (*model.Trip, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Finish", ctx, id)
-	ret0, _ := ret[0].(*model.Trip)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// Finish indicates an expected call of Finish.
-func (mr *MocktripRepositoryMockRecorder) Finish(ctx, id any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Finish", reflect.TypeOf((*MocktripRepository)(nil).Finish), ctx, id)
-}
-
 // GetByID mocks base method.
 func (m *MocktripRepository) GetByID(ctx context.Context, id uuid.UUID) (*model.Trip, error) {
 	m.ctrl.T.Helper()
@@ -70,6 +56,21 @@ func (m *MocktripRepository) GetByID(ctx context.Context, id uuid.UUID) (*model.
 func (mr *MocktripRepositoryMockRecorder) GetByID(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetByID", reflect.TypeOf((*MocktripRepository)(nil).GetByID), ctx, id)
+}
+
+// SaveFinished mocks base method.
+func (m *MocktripRepository) SaveFinished(ctx context.Context, id uuid.UUID, finishedAt time.Time) (*model.Trip, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SaveFinished", ctx, id, finishedAt)
+	ret0, _ := ret[0].(*model.Trip)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SaveFinished indicates an expected call of SaveFinished.
+func (mr *MocktripRepositoryMockRecorder) SaveFinished(ctx, id, finishedAt any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveFinished", reflect.TypeOf((*MocktripRepository)(nil).SaveFinished), ctx, id, finishedAt)
 }
 
 // MocktxManager is a mock of txManager interface.
