@@ -48,3 +48,15 @@ func TestTrip_Finish(t *testing.T) {
 		})
 	}
 }
+
+// Проверяет запрет координат для завершённой поездки
+func TestTrip_EnsureActive(t *testing.T) {
+	active := Trip{Status: StatusActive}
+	if err := active.EnsureActive(); err != nil {
+		t.Fatalf("active: unexpected error %v", err)
+	}
+	completed := Trip{Status: StatusCompleted}
+	if !errors.Is(completed.EnsureActive(), ErrTripCompleted) {
+		t.Fatal("completed: want ErrTripCompleted")
+	}
+}
