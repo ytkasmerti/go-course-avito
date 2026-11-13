@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -9,13 +10,16 @@ import (
 )
 
 const (
-	envMaxConns = "DATABASE_MAX_CONNS"
-	envMinConns = "DATABASE_MIN_CONNS"
+	envMaxConns  = "DATABASE_MAX_CONNS"
+	envMinConns  = "DATABASE_MIN_CONNS"
+	envWorkers   = "POSITION_WORKERS"
+	envQueueSize = "POSITION_QUEUE_SIZE"
 )
 
 var durationVars = []string{
 	"SHUTDOWN_TIMEOUT", "DATABASE_MAX_CONN_LIFETIME", "DATABASE_CONNECT_TIMEOUT", "DATABASE_QUERY_TIMEOUT",
 	"HTTP_READ_TIMEOUT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_WRITE_TIMEOUT", "HTTP_IDLE_TIMEOUT",
+	"POSITION_CHECK_INTERVAL", "POSITION_STALE_AFTER", "PUSH_REQUEST_TIMEOUT",
 }
 
 func validEnv() map[string]string {
@@ -33,6 +37,7 @@ func validEnv() map[string]string {
 		"DATABASE_MAX_CONN_LIFETIME": "30m",
 		"DATABASE_CONNECT_TIMEOUT":   "5s",
 		"DATABASE_QUERY_TIMEOUT":     "3s",
+		"PUSH_HTTP_URL":              "http://localhost:8090",
 	}
 }
 
@@ -97,6 +102,40 @@ func TestLoad_InvalidPoolSizes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := load(t, tt.overrides)
 			require.ErrorContains(t, err, tt.wantVar)
+		})
+	}
+}
+
+// Проверяет дефолты работы 3 и обязательность PUSH_HTTP_URL
+func TestLoad_PositionDefaults(t *testing.T) {
+	cfg, err := load(t, map[string]string{
+		"POSITION_CHECK_INTERVAL": "", "POSITION_STALE_AFTER": "", "PUSH_REQUEST_TIMEOUT": "",
+		envWorkers: "", envQueueSize: "",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, cfg.PositionCheckInterval)
+	require.Equal(t, 60*time.Second, cfg.PositionStaleAfter)
+	require.Equal(t, time.Second, cfg.PushRequestTimeout)
+	require.Equal(t, 4, cfg.PositionWorkers)
+	require.Equal(t, 100, cfg.PositionQueueSize)
+
+	_, err = load(t, map[string]string{"PUSH_HTTP_URL": ""})
+	require.ErrorContains(t, err, "PUSH_HTTP_URL")
+}
+
+// Проверяет ошибки размеров пула воркеров и очереди
+func TestLoad_InvalidPositionSizes(t *testing.T) {
+	tests := []struct{ name, variable, value string }{
+		{"workers zero", envWorkers, "0"},
+		{"workers negative", envWorkers, "-1"},
+		{"workers not a number", envWorkers, "abc"},
+		{"queue zero", envQueueSize, "0"},
+		{"queue negative", envQueueSize, "-2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := load(t, map[string]string{tt.variable: tt.value})
+			require.ErrorContains(t, err, tt.variable)
 		})
 	}
 }
