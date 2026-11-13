@@ -9,18 +9,6 @@ import (
 	api "github.com/ytkasmerti/go-course-avito/internal/generated"
 )
 
-type (
-	createHandler interface {
-		Handle(w http.ResponseWriter, r *http.Request, params api.CreateTripParams)
-	}
-	tripHandler interface {
-		Handle(w http.ResponseWriter, r *http.Request, tripID api.TripId)
-	}
-	pinger interface {
-		Ping(ctx context.Context) error
-	}
-)
-
 // Реализует api.ServerInterface, маршруты и разбор параметров делает сгенерированный адаптер
 // Здесь только вызов хендлеров с уже разобранными параметрами
 type Server struct {

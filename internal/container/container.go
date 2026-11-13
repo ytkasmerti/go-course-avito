@@ -92,7 +92,20 @@ func (c *Container) Shutdown(ctx context.Context) error {
 	if err := c.shutdown(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	c.pool.Close()
+
+	// pgxpool.Close ждет возврата всех занятых соединений
+	// Если запрос завис остановка укладывается в тот же дедлайн SHUTDOWN_TIMEOUT
+	closed := make(chan struct{})
+	go func() {
+		c.pool.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("close pool: %w", ctx.Err()))
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("shutdown: %v", errs)
 	}
