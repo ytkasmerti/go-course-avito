@@ -20,23 +20,26 @@ import (
 )
 
 type fixture struct {
-	create *MockcreateHandler
-	get    *MocktripHandler
-	finish *MocktripHandler
-	db     *Mockpinger
-	h      http.Handler
+	create                     *MockcreateHandler
+	get                        *MocktripHandler
+	finish                     *MocktripHandler
+	db                         *Mockpinger
+	h                          http.Handler
+	savePosition, listPosition *MocktripHandler
 }
 
 func newFixture(t *testing.T, pingTimeout time.Duration) *fixture {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	f := &fixture{
-		create: NewMockcreateHandler(ctrl),
-		get:    NewMocktripHandler(ctrl),
-		finish: NewMocktripHandler(ctrl),
-		db:     NewMockpinger(ctrl),
+		create:       NewMockcreateHandler(ctrl),
+		get:          NewMocktripHandler(ctrl),
+		finish:       NewMocktripHandler(ctrl),
+		savePosition: NewMocktripHandler(ctrl),
+		listPosition: NewMocktripHandler(ctrl),
+		db:           NewMockpinger(ctrl),
 	}
-	srv := server.New(f.create, f.get, f.finish, f.db, pingTimeout)
+	srv := server.New(f.create, f.get, f.finish, f.savePosition, f.listPosition, f.db, pingTimeout)
 	f.h = api.HandlerWithOptions(srv, api.ChiServerOptions{
 		BaseRouter:       chi.NewRouter(),
 		ErrorHandlerFunc: domainerror.InvalidParam,
@@ -73,6 +76,8 @@ func TestInvalidTripID_IsProblemAndHandlerNotCalled(t *testing.T) {
 
 	requireInvalidRequest(t, f.do(http.MethodGet, "/api/v1/trips/abc", nil))
 	requireInvalidRequest(t, f.do(http.MethodPost, "/api/v1/trips/abc/finish", nil))
+	requireInvalidRequest(t, f.do(http.MethodPost, "/api/v1/trips/abc/positions", nil))
+	requireInvalidRequest(t, f.do(http.MethodGet, "/api/v1/trips/abc/positions", nil))
 }
 
 // Проверяет 400 на невалидный ключ
@@ -162,4 +167,14 @@ func TestReady_PingIsBoundedByDeadline(t *testing.T) {
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	require.Less(t, time.Since(start), time.Second)
+}
+
+// Проверяет, что ручки координат доходят до хендлеров
+func TestPositionRoutes_ReachHandlers(t *testing.T) {
+	f := newFixture(t, time.Second)
+	id := uuid.New()
+	f.savePosition.EXPECT().Handle(gomock.Any(), gomock.Any(), id).Do(replyTrip(http.StatusCreated))
+	f.listPosition.EXPECT().Handle(gomock.Any(), gomock.Any(), id).Do(replyTrip(http.StatusOK))
+	require.Equal(t, http.StatusCreated, f.do(http.MethodPost, "/api/v1/trips/"+id.String()+"/positions", nil).Code)
+	require.Equal(t, http.StatusOK, f.do(http.MethodGet, "/api/v1/trips/"+id.String()+"/positions", nil).Code)
 }

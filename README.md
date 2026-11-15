@@ -32,10 +32,15 @@ docker run --rm -p 8080:8080 \
   -e DATABASE_MAX_CONNS=10 -e DATABASE_MIN_CONNS=2 \
   -e DATABASE_MAX_CONN_LIFETIME=30m \
   -e DATABASE_CONNECT_TIMEOUT=5s -e DATABASE_QUERY_TIMEOUT=3s \
+  -e POSITION_CHECK_INTERVAL=30s -e POSITION_STALE_AFTER=60s \
+  -e POSITION_WORKERS=4 -e POSITION_QUEUE_SIZE=100 \
+  -e PUSH_REQUEST_TIMEOUT=1s \
+  -e PUSH_HTTP_URL="$(echo "$PUSH_HTTP_URL" | sed 's/localhost/host.docker.internal/')" \
   -e OTEL_EXPORTER_OTLP_ENDPOINT="$(echo "$OTEL_EXPORTER_OTLP_ENDPOINT" | sed 's/localhost/host.docker.internal/')" \
   trip-service:local
 ```
 Остановка сервиса: `Ctrl+C`
+
 
 ## Переменные окружения
 Все переменные перечислены в `.env.example`. Адреса БД и коллектора приходят в `.env` от `tripgoctl`. При запуске в Docker остальные переменные передаются через `-e`.
@@ -128,3 +133,26 @@ gremlins unleash ./internal/usecase/
 - Новые замечания линтера исправлены, новых выживших и непокрытых мутантов в мутационном тестировании нет
 - Остановка сервиса: pool.Close() ждет возврата всех занятых соединений, поэтому при зависшем запросе он ограничен тем же дедлайном SHUTDOWN_TIMEOUT: сервис выходит вовремя, а не ждет конца запроса
 - Тесты серверного адаптера используют сгенерированные моки зависимостей вместо самописных заглушек
+
+# Лабораторная работа 3
+## Что сделано
+- Миграции: колонка last_position_at в trips, таблица trip_positions с индексом по (trip_id, recorded_at, id), отдельная миграция с частичным индексом trips_stale_idx под выборку устаревших поездок
+- Ручка POST /api/v1/trips/{tripId}/positions: 201 при успехе, 400 invalid_request при невалидных координатах или recorded_at из будущего, 404 trip_not_found, 409 trip_completed для завершенных поездок
+- Ручка GET /api/v1/trips/{tripId}/positions: 200 с маршрутом, сортировка по recorded_at, затем по id
+- Сохранение координаты и обновление last_position_at выполняются в одной транзакции через TxManager
+- Опоздавшая координата не старит поездку: сравнение времени идет в самом UPDATE, а не чтением значения в Go
+- Сканер устаревших поездок: одна фоновая горутина с тикером, период из переменной окружения
+- Очередь и worker pool: буферизованный канал ограниченной емкости, фиксированное число воркеров, дедупликация через map, отмена по пришедшей координате
+- HTTP-гейтвей в Push Service: свой http.Client с таймаутом, различение кодов 4xx и 5xx, закрытие тела ответа
+- Метрики пула: tripgo.stale_checks по result, tripgo.position_requests по result, queue.size, workers.active, duration
+- Трейсы: спан обработки задачи связан со спаном проверки через span link
+- Тесты: unit с -race и goleak, подменяемый тикер для тестов без time.Sleep, интеграционные тесты выборки и EXPLAIN
+
+## Решения
+- Индекс под выборку устаревших — выражение COALESCE(last_position_at, started_at) с WHERE status='active': покрывает и фильтр, и сортировку, время считается в SQL, а не в Go
+- В SavePosition первым идёт UPDATE с условиями status='active' и last_position_at < $recorded: блокировка строки сериализует с параллельным finish, монотонность обеспечивает SQL, опоздавшая точка сохраняется в маршрут, но не старит поездку
+- Дедупликация через map pending под мьютексом: сканер проверяет перед постановкой, воркер чистит после обработки, хендлер координат убирает пришедшую поездку, запись живет до конца обработки, поэтому пауза между пушами равна периоду тикера
+- При переполнении очереди задача дропается с Warn-логом и метрикой, сканер не блокируется
+- Остановка: HTTP-сервер - сканер (новые задачи не появляются) - воркеры дорабатывают очередь в пределах SHUTDOWN_TIMEOUT - HTTP-клиент пушей - пул БД - телеметрия, порядок покрыт тестом
+- Сканер, очередь и воркеры — один компонент в internal/worker/positions, гейтвей в internal/gateway/push
+- Save и List координат в одном пакете usecase/position: List это проверка существования и выборка, отдельный пакет под него не заводили

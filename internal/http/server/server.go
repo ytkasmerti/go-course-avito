@@ -13,16 +13,25 @@ import (
 // Здесь только вызов хендлеров с уже разобранными параметрами
 type Server struct {
 	api.Unimplemented
-
-	create      createHandler
-	get         tripHandler
-	finish      tripHandler
-	db          pinger
-	pingTimeout time.Duration
+	create       createHandler
+	get          tripHandler
+	finish       tripHandler
+	db           pinger
+	pingTimeout  time.Duration
+	savePosition tripHandler
+	listPosition tripHandler
 }
 
-func New(create createHandler, get, finish tripHandler, db pinger, pingTimeout time.Duration) *Server {
-	return &Server{create: create, get: get, finish: finish, db: db, pingTimeout: pingTimeout}
+func New(create createHandler, get, finish, savePosition, listPosition tripHandler, db pinger, pingTimeout time.Duration) *Server {
+	return &Server{create: create, get: get, finish: finish, savePosition: savePosition, listPosition: listPosition, db: db, pingTimeout: pingTimeout}
+}
+
+func (s *Server) CreateTripPosition(w http.ResponseWriter, r *http.Request, tripID api.TripId) {
+	s.savePosition.Handle(w, r, tripID)
+}
+
+func (s *Server) ListTripPositions(w http.ResponseWriter, r *http.Request, tripID api.TripId) {
+	s.listPosition.Handle(w, r, tripID)
 }
 
 func (s *Server) CreateTrip(w http.ResponseWriter, r *http.Request, params api.CreateTripParams) {

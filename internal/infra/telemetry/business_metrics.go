@@ -12,6 +12,7 @@ type BusinessMetrics struct {
 	created   metric.Int64Counter
 	completed metric.Int64Counter
 	active    *atomic.Int64
+	saved     metric.Int64Counter
 }
 
 func NewBusinessMetrics() (*BusinessMetrics, error) {
@@ -29,6 +30,12 @@ func NewBusinessMetrics() (*BusinessMetrics, error) {
 		return nil, err
 	}
 
+	saved, err := meter.Int64Counter("tripgo.positions.saved",
+		metric.WithDescription("Positions saved"))
+	if err != nil {
+		return nil, err
+	}
+
 	activeVal := &atomic.Int64{}
 	_, err = meter.Int64ObservableGauge("tripgo.trips.active",
 		metric.WithDescription("Trips currently active"),
@@ -41,7 +48,11 @@ func NewBusinessMetrics() (*BusinessMetrics, error) {
 		return nil, err
 	}
 
-	return &BusinessMetrics{created: created, completed: completed, active: activeVal}, nil
+	return &BusinessMetrics{created: created, completed: completed, active: activeVal, saved: saved}, nil
+}
+
+func (m *BusinessMetrics) IncPositionSaved(ctx context.Context) {
+	m.saved.Add(ctx, 1)
 }
 
 func (m *BusinessMetrics) IncCreated(ctx context.Context) {
