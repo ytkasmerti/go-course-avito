@@ -85,7 +85,7 @@ func New(ctx context.Context, cfg config.Config) (*Container, error) {
 		Workers:       cfg.PositionWorkers,
 		QueueSize:     cfg.PositionQueueSize,
 		PushTimeout:   cfg.PushRequestTimeout,
-		BatchSize:     cfg.PositionBatchSize,
+		BatchSize:     cfg.PositionScanBatchSize,
 	}, repo, pushClient, tel.Logger, nil)
 	if err != nil {
 		pushClient.Close()

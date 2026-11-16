@@ -138,14 +138,14 @@ func TestRepo_ListStale(t *testing.T) {
 	now := time.Now().UTC()
 
 	noPos := newTrip(uuid.New()) // без координат, стартовала 3 часа назад
-	noPos.StartedAt = now.Add(-3 * time.Hour)
+	noPos.StartedAt = now.Add(-1000 * time.Hour)
 	cleanup(t, pool, noPos.ID)
 	require.NoError(t, repo.Create(ctx, noPos))
 
 	oldPos := newTrip(uuid.New()) // координата 2 часа назад
 	cleanup(t, pool, oldPos.ID)
 	require.NoError(t, repo.Create(ctx, oldPos))
-	_, err := pool.Exec(ctx, "UPDATE trips SET last_position_at = now() - interval '2 hours' WHERE id = $1", oldPos.ID)
+	_, err := pool.Exec(ctx, "UPDATE trips SET last_position_at = now() - interval '999 hours' WHERE id = $1", oldPos.ID)
 	require.NoError(t, err)
 
 	fresh := newTrip(uuid.New())
@@ -155,7 +155,6 @@ func TestRepo_ListStale(t *testing.T) {
 	require.NoError(t, err)
 
 	completed := newTrip(uuid.New())
-	completed.StartedAt = now.Add(-3 * time.Hour)
 	cleanup(t, pool, completed.ID)
 	require.NoError(t, repo.Create(ctx, completed))
 	_, err = repo.SaveFinished(ctx, completed.ID, now)
@@ -237,4 +236,60 @@ func TestRepo_ListStale_BatchesByCursor(t *testing.T) {
 	}
 	// порядок совпал - значит три батча покрыли все 250 без пропусков и повторов
 	require.Equal(t, ids, got[:250])
+}
+
+// Проверяет курсор при одинаковом времени, никто не потерян и не прочитан дважды
+func TestRepo_ListStale_CursorWithEqualTimes(t *testing.T) {
+	pool := newPool(t)
+	repo := repoTrip.New(pool, testQueryTimeout)
+	ctx := context.Background()
+	at := time.Now().UTC().Add(-100 * time.Hour).Truncate(time.Microsecond)
+	ids := make([]uuid.UUID, 0, 5)
+	for i := 0; i < 5; i++ {
+		tr := newTrip(uuid.New())
+		tr.StartedAt = at
+		cleanup(t, pool, tr.ID)
+		require.NoError(t, repo.Create(ctx, tr))
+		ids = append(ids, tr.ID)
+	}
+	var cursor *model.StaleCursor
+	got := make([]uuid.UUID, 0, 6)
+	for i := 0; i < 3; i++ {
+		batch, err := repo.ListStale(ctx, time.Minute, cursor, 2)
+		require.NoError(t, err)
+		require.NotEmpty(t, batch)
+		for _, s := range batch {
+			got = append(got, s.ID)
+		}
+		last := batch[len(batch)-1]
+		cursor = &model.StaleCursor{At: last.LastAt, ID: last.ID}
+	}
+	require.ElementsMatch(t, ids, got[:5])
+}
+
+// Проверяет форму плана запроса с продолжением, тоже должен идти по индексу
+func TestRepo_ListStale_CursorUsesIndex(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+	conn, err := pool.Acquire(ctx)
+	require.NoError(t, err)
+	t.Cleanup(conn.Release)
+	_, err = conn.Exec(ctx, "SET enable_seqscan = off")
+	require.NoError(t, err)
+	rows, err := conn.Query(ctx, `EXPLAIN SELECT id, driver_id, COALESCE(last_position_at, started_at) AS last_at FROM trips
+		WHERE status = 'active'
+		  AND COALESCE(last_position_at, started_at) < now() - make_interval(secs => $1::double precision)
+		  AND (COALESCE(last_position_at, started_at), id) > ($2, $3)
+		ORDER BY last_at, id LIMIT 100`,
+		60.0, time.Now().UTC().Add(-time.Hour), uuid.New())
+	require.NoError(t, err)
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var line string
+		require.NoError(t, rows.Scan(&line))
+		plan = append(plan, line)
+	}
+	require.NoError(t, rows.Err())
+	require.Contains(t, strings.Join(plan, "\n"), "trips_stale_idx")
 }

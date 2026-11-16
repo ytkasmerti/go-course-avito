@@ -14,7 +14,7 @@ const (
 	envMinConns  = "DATABASE_MIN_CONNS"
 	envWorkers   = "POSITION_WORKERS"
 	envQueueSize = "POSITION_QUEUE_SIZE"
-	envBatchSize = "POSITION_BATCH_SIZE"
+	envBatchSize = "POSITION_SCAN_BATCH_SIZE"
 )
 
 var durationVars = []string{
@@ -119,7 +119,7 @@ func TestLoad_PositionDefaults(t *testing.T) {
 	require.Equal(t, time.Second, cfg.PushRequestTimeout)
 	require.Equal(t, 4, cfg.PositionWorkers)
 	require.Equal(t, 100, cfg.PositionQueueSize)
-	require.Equal(t, 100, cfg.PositionBatchSize)
+	require.Equal(t, 100, cfg.PositionScanBatchSize)
 
 	_, err = load(t, map[string]string{"PUSH_HTTP_URL": ""})
 	require.ErrorContains(t, err, "PUSH_HTTP_URL")

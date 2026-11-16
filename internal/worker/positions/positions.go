@@ -106,7 +106,7 @@ type metrics struct {
 	requests    metric.Int64Counter
 	duration    metric.Float64Histogram
 	active      atomic.Int64
-	rowsRead    metric.Int64Counter
+	rowsRead    metric.Int64Histogram
 }
 
 func newMetrics(queueSize func() int) (*metrics, error) {
@@ -130,7 +130,7 @@ func newMetrics(queueSize func() int) (*metrics, error) {
 		return nil, err
 	}
 
-	rowsRead, err := meter.Int64Counter("tripgo.stale_rows_read",
+	rowsRead, err := meter.Int64Histogram("tripgo.stale_checks.rows_read",
 		metric.WithDescription("Stale trips read per tick"))
 	if err != nil {
 		return nil, err
@@ -178,8 +178,8 @@ func (m *metrics) observeDuration(ctx context.Context, result string, seconds fl
 	m.duration.Record(ctx, seconds, metric.WithAttributes(attribute.String("result", result)))
 }
 
-func (m *metrics) addRows(ctx context.Context, n int) {
-	m.rowsRead.Add(ctx, int64(n))
+func (m *metrics) observeRows(ctx context.Context, n int) {
+	m.rowsRead.Record(ctx, int64(n))
 }
 
 func New(cfg Config, trips staleTrips, push pushGateway, log *slog.Logger, newTicker func(time.Duration) Ticker) (*Component, error) {
@@ -241,11 +241,20 @@ func (c *Component) Start(ctx context.Context) {
 // Убирает поездку из очереди, координата пришла, пуш не нужен
 func (c *Component) Cancel(tripID uuid.UUID) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.pending[tripID]; !ok {
+		return
+	}
 	delete(c.pending, tripID)
-	c.mu.Unlock()
+	for i, t := range c.queue {
+		if t.trip.ID == tripID {
+			heap.Remove(&c.queue, i)
+			break
+		}
+	}
 }
 
-// дорабатывают очередь в рамках ctx, по его истечении принудительная отмена
+// останавливает сканер, воркеры дорабатывают очередь в рамках ctx, по его истечении принудительная отмена
 func (c *Component) Shutdown(ctx context.Context) error {
 	c.scannerCancel()
 	<-c.scannerDone
@@ -293,7 +302,9 @@ func (c *Component) scanOnce(ctx context.Context) {
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "stale scan failed")
-			c.log.WarnContext(ctx, "stale trips scan failed", slog.Any("err", err))
+			if ctx.Err() == nil {
+				c.log.WarnContext(ctx, "stale trips scan failed", slog.Any("err", err))
+			}
 			break
 		}
 		read += len(batch)
@@ -310,7 +321,7 @@ func (c *Component) scanOnce(ctx context.Context) {
 		last := batch[len(batch)-1]
 		cursor = &model.StaleCursor{At: last.LastAt, ID: last.ID}
 	}
-	c.metrics.addRows(ctx, read)
+	c.metrics.observeRows(ctx, read)
 	span.SetAttributes(attribute.Int("stale.rows_read", read))
 }
 
@@ -335,6 +346,7 @@ func (c *Component) enqueue(ctx context.Context, t task) string {
 		evicted := c.queue[worst]
 		heap.Remove(&c.queue, worst)
 		delete(c.pending, evicted.trip.ID)
+		c.metrics.staleCheck(ctx, resultDropped)
 		c.metrics.request(ctx, resultDropped)
 		c.log.WarnContext(ctx, "position request evicted from queue",
 			slog.String(attrTripID, evicted.trip.ID.String()))
@@ -374,7 +386,7 @@ func (c *Component) runWorker(ctx context.Context) {
 	for {
 		t, ok := c.next()
 		if !ok || ctx.Err() != nil {
-			return // канал закрыт и пуст — очередь доработана
+			return // очередь закрыта и пуста — доработали все
 		}
 		c.process(ctx, t)
 	}
@@ -407,7 +419,7 @@ func (c *Component) process(ctx context.Context, t task) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "push request failed")
 		c.log.WarnContext(ctx, "push request failed",
-			slog.String("attrTripID", t.trip.ID.String()), slog.Any("err", err))
+			slog.String(attrTripID, t.trip.ID.String()), slog.Any("err", err))
 	}
 	c.metrics.request(ctx, result)
 	c.metrics.observeDuration(ctx, result, time.Since(start).Seconds())
