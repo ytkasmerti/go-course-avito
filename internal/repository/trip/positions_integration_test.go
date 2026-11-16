@@ -161,7 +161,7 @@ func TestRepo_ListStale(t *testing.T) {
 	_, err = repo.SaveFinished(ctx, completed.ID, now)
 	require.NoError(t, err)
 
-	got, err := repo.ListStale(ctx, time.Minute)
+	got, err := repo.ListStale(ctx, time.Minute, nil, 100)
 	require.NoError(t, err)
 	ids := make([]uuid.UUID, 0, len(got))
 	for _, s := range got {
@@ -195,7 +195,7 @@ func TestRepo_ListStale_UsesIndex(t *testing.T) {
 	rows, err := conn.Query(ctx, `EXPLAIN SELECT id, driver_id FROM trips
 		WHERE status = 'active'
 		  AND COALESCE(last_position_at, started_at) < now() - make_interval(secs => $1::double precision)
-		ORDER BY COALESCE(last_position_at, started_at)`, 60.0)
+		ORDER BY COALESCE(last_position_at, started_at), id`, 60.0)
 	require.NoError(t, err)
 	defer rows.Close()
 	var plan []string
@@ -206,4 +206,35 @@ func TestRepo_ListStale_UsesIndex(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 	require.Contains(t, strings.Join(plan, "\n"), "trips_stale_idx")
+}
+
+// Проверяет курсор, 250 своих поездок читаются тремя батчами по 100 без пропусков и дублей
+func TestRepo_ListStale_BatchesByCursor(t *testing.T) {
+	pool := newPool(t)
+	repo := repoTrip.New(pool, testQueryTimeout)
+	ctx := context.Background()
+	// делаем поездки самыми старыми, чтобы они шли первыми в выборке
+	base := time.Now().UTC().Add(-100 * time.Hour).Truncate(time.Microsecond)
+	ids := make([]uuid.UUID, 0, 250)
+	for i := 0; i < 250; i++ {
+		tr := newTrip(uuid.New())
+		tr.StartedAt = base.Add(time.Duration(i) * time.Second)
+		cleanup(t, pool, tr.ID)
+		require.NoError(t, repo.Create(ctx, tr))
+		ids = append(ids, tr.ID)
+	}
+	var cursor *model.StaleCursor
+	got := make([]uuid.UUID, 0, 300)
+	for i := 0; i < 3; i++ {
+		batch, err := repo.ListStale(ctx, time.Minute, cursor, 100)
+		require.NoError(t, err)
+		require.NotEmpty(t, batch)
+		for _, s := range batch {
+			got = append(got, s.ID)
+		}
+		last := batch[len(batch)-1]
+		cursor = &model.StaleCursor{At: last.LastAt, ID: last.ID}
+	}
+	// порядок совпал - значит три батча покрыли все 250 без пропусков и повторов
+	require.Equal(t, ids, got[:250])
 }

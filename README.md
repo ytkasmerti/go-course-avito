@@ -37,6 +37,7 @@ docker run --rm -p 8080:8080 \
   -e PUSH_REQUEST_TIMEOUT=1s \
   -e PUSH_HTTP_URL="$(echo "$PUSH_HTTP_URL" | sed 's/localhost/host.docker.internal/')" \
   -e OTEL_EXPORTER_OTLP_ENDPOINT="$(echo "$OTEL_EXPORTER_OTLP_ENDPOINT" | sed 's/localhost/host.docker.internal/')" \
+  -e POSITION_BATCH_SIZE=100 \
   trip-service:local
 ```
 Остановка сервиса: `Ctrl+C`

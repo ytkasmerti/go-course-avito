@@ -44,18 +44,18 @@ func (m *MockstaleTrips) EXPECT() *MockstaleTripsMockRecorder {
 }
 
 // ListStale mocks base method.
-func (m *MockstaleTrips) ListStale(ctx context.Context, staleAfter time.Duration) ([]model.StaleTrip, error) {
+func (m *MockstaleTrips) ListStale(ctx context.Context, staleAfter time.Duration, after *model.StaleCursor, limit int) ([]model.StaleTrip, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListStale", ctx, staleAfter)
+	ret := m.ctrl.Call(m, "ListStale", ctx, staleAfter, after, limit)
 	ret0, _ := ret[0].([]model.StaleTrip)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ListStale indicates an expected call of ListStale.
-func (mr *MockstaleTripsMockRecorder) ListStale(ctx, staleAfter any) *gomock.Call {
+func (mr *MockstaleTripsMockRecorder) ListStale(ctx, staleAfter, after, limit any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListStale", reflect.TypeOf((*MockstaleTrips)(nil).ListStale), ctx, staleAfter)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListStale", reflect.TypeOf((*MockstaleTrips)(nil).ListStale), ctx, staleAfter, after, limit)
 }
 
 // MockpushGateway is a mock of pushGateway interface.

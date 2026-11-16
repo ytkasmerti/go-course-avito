@@ -14,6 +14,7 @@ const (
 	envMinConns  = "DATABASE_MIN_CONNS"
 	envWorkers   = "POSITION_WORKERS"
 	envQueueSize = "POSITION_QUEUE_SIZE"
+	envBatchSize = "POSITION_BATCH_SIZE"
 )
 
 var durationVars = []string{
@@ -110,7 +111,7 @@ func TestLoad_InvalidPoolSizes(t *testing.T) {
 func TestLoad_PositionDefaults(t *testing.T) {
 	cfg, err := load(t, map[string]string{
 		"POSITION_CHECK_INTERVAL": "", "POSITION_STALE_AFTER": "", "PUSH_REQUEST_TIMEOUT": "",
-		envWorkers: "", envQueueSize: "",
+		envWorkers: "", envQueueSize: "", envBatchSize: "",
 	})
 	require.NoError(t, err)
 	require.Equal(t, 30*time.Second, cfg.PositionCheckInterval)
@@ -118,6 +119,7 @@ func TestLoad_PositionDefaults(t *testing.T) {
 	require.Equal(t, time.Second, cfg.PushRequestTimeout)
 	require.Equal(t, 4, cfg.PositionWorkers)
 	require.Equal(t, 100, cfg.PositionQueueSize)
+	require.Equal(t, 100, cfg.PositionBatchSize)
 
 	_, err = load(t, map[string]string{"PUSH_HTTP_URL": ""})
 	require.ErrorContains(t, err, "PUSH_HTTP_URL")
@@ -131,6 +133,8 @@ func TestLoad_InvalidPositionSizes(t *testing.T) {
 		{"workers not a number", envWorkers, "abc"},
 		{"queue zero", envQueueSize, "0"},
 		{"queue negative", envQueueSize, "-2"},
+		{"batch zero", envBatchSize, "0"},
+		{"batch negative", envBatchSize, "-1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

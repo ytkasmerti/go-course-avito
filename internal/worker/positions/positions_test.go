@@ -27,12 +27,12 @@ const (
 	metricStaleChecks = "tripgo.stale_checks"
 	metricRequests    = "tripgo.position_requests"
 	metricActive      = "tripgo.position_requests.workers.active"
-
-	resQueued    = "queued"
-	resDuplicate = "duplicate"
-	resDropped   = "dropped"
-	resSuccess   = "success"
-	resError     = "error"
+	resQueued         = "queued"
+	resDuplicate      = "duplicate"
+	resDropped        = "dropped"
+	resSuccess        = "success"
+	resError          = "error"
+	metricRowsRead    = "tripgo.stale_rows_read"
 )
 
 // тесты не ждут реальные секунды
@@ -61,6 +61,14 @@ type harness struct {
 
 func newHarness(t *testing.T, workers, queueSize int) *harness {
 	t.Helper()
+	return newHarnessCfg(t, positions.Config{
+		CheckInterval: time.Hour, StaleAfter: time.Minute,
+		Workers: workers, QueueSize: queueSize, PushTimeout: time.Second, BatchSize: 100,
+	})
+}
+
+func newHarnessCfg(t *testing.T, cfg positions.Config) *harness {
+	t.Helper()
 	ctrl := gomock.NewController(t)
 	reader := sdkmetric.NewManualReader()
 	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
@@ -70,10 +78,7 @@ func newHarness(t *testing.T, workers, queueSize int) *harness {
 		trips: NewMockstaleTrips(ctrl), push: NewMockpushGateway(ctrl),
 		ticker: tk, reader: reader, logs: logs,
 	}
-	c, err := positions.New(positions.Config{
-		CheckInterval: time.Hour, StaleAfter: time.Minute,
-		Workers: workers, QueueSize: queueSize, PushTimeout: time.Second,
-	}, h.trips, h.push, slog.New(slog.NewJSONHandler(logs, nil)),
+	c, err := positions.New(cfg, h.trips, h.push, slog.New(slog.NewJSONHandler(logs, nil)),
 		func(time.Duration) positions.Ticker { return tk })
 	require.NoError(t, err)
 	h.c = c
@@ -103,6 +108,26 @@ func (h *harness) counter(t *testing.T, name, result string) int64 {
 	return sum
 }
 
+func (h *harness) counterTotal(t *testing.T, name string) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, h.reader.Collect(context.Background(), &rm))
+	var sum int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			data, ok := m.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+			for _, dp := range data.DataPoints {
+				sum += dp.Value
+			}
+		}
+	}
+	return sum
+}
+
 func (h *harness) gauge(t *testing.T, name string) int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -122,19 +147,19 @@ func (h *harness) gauge(t *testing.T, name string) int64 {
 	return 0
 }
 
-// Задает ответы ListStale по тикам, последний сигналит, что предыдущий тик обработан
+// scans задаёт ответы ListStale по тикам; последний сигналит, что предыдущий тик обработан
 func (h *harness) scans(scanned chan struct{}, batches ...[]model.StaleTrip) {
 	calls := make([]any, 0, len(batches))
 	for i, b := range batches {
 		batch := b
 		if i == len(batches)-1 {
-			calls = append(calls, h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any()).
-				DoAndReturn(func(context.Context, time.Duration) ([]model.StaleTrip, error) {
+			calls = append(calls, h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(context.Context, time.Duration, *model.StaleCursor, int) ([]model.StaleTrip, error) {
 					close(scanned)
 					return batch, nil
 				}))
 		} else {
-			calls = append(calls, h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any()).Return(batch, nil))
+			calls = append(calls, h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(batch, nil))
 		}
 	}
 	gomock.InOrder(calls...)
@@ -290,9 +315,10 @@ func TestComponent_ScanErrorKeepsScannerAlive(t *testing.T) {
 	h.push.EXPECT().RequestPosition(gomock.Any(), a.ID, a.DriverID).Return(nil)
 	scanned := make(chan struct{})
 	gomock.InOrder(
-		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any()).Return(nil, errors.New("db down")),
-		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any()).
-			DoAndReturn(func(context.Context, time.Duration) ([]model.StaleTrip, error) {
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(nil, errors.New("db down")),
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(context.Context, time.Duration, *model.StaleCursor, int) ([]model.StaleTrip, error) {
 				close(scanned)
 				return []model.StaleTrip{a}, nil
 			}),
@@ -335,4 +361,73 @@ func TestComponent_ShutdownTimeoutCancelsWorkers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	require.ErrorIs(t, h.c.Shutdown(ctx), context.DeadlineExceeded)
+}
+
+// Проверяет чтение батчами, 250 поездок и батч 100 — три запроса
+func TestComponent_ScanReadsAllBatches(t *testing.T) {
+	h := newHarnessCfg(t, positions.Config{
+		CheckInterval: time.Hour, StaleAfter: time.Minute,
+		Workers: 2, QueueSize: 300, PushTimeout: time.Second, BatchSize: 100,
+	})
+	all := make([]model.StaleTrip, 0, 250)
+	for i := 0; i < 250; i++ {
+		all = append(all, model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: time.Now()})
+	}
+	h.push.EXPECT().RequestPosition(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(250)
+	scanned := make(chan struct{})
+	gomock.InOrder(
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), 100).Return(all[:100], nil),
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), 100).Return(all[100:200], nil),
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), 100).
+			DoAndReturn(func(context.Context, time.Duration, *model.StaleCursor, int) ([]model.StaleTrip, error) {
+				close(scanned)
+				return all[200:], nil
+			}),
+	)
+	h.ticker.tick(t)
+	<-scanned
+	require.NoError(t, h.c.Shutdown(context.Background()))
+	require.EqualValues(t, 250, h.counterTotal(t, metricRowsRead))
+	require.EqualValues(t, 250, h.counter(t, metricStaleChecks, resQueued))
+	require.EqualValues(t, 250, h.counter(t, metricRequests, resSuccess))
+}
+
+// Проверяет остановку чтения на заполненной очереди, за тик ровно два запроса
+func TestComponent_ScanStopsWhenQueueFull(t *testing.T) {
+	h := newHarnessCfg(t, positions.Config{
+		CheckInterval: time.Hour, StaleAfter: time.Minute,
+		Workers: 1, QueueSize: 1, PushTimeout: time.Second, BatchSize: 1,
+	})
+	blocker := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: time.Now()}
+	a := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: time.Now()}
+	b := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: time.Now()}
+	started, release := make(chan struct{}), make(chan struct{})
+	blockPush(h.push, blocker.ID, started, release)
+	h.push.EXPECT().RequestPosition(gomock.Any(), a.ID, gomock.Any()).Return(nil)
+	scanned := make(chan struct{})
+	gomock.InOrder(
+		// тик 1 - blocker уходит воркеру, второй запрос пустой, конец обхода
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), 1).Return([]model.StaleTrip{blocker}, nil),
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), 1).Return(nil, nil),
+		// тик 2 - a занимает очередь, b дропается, чтение останавливается
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), 1).Return([]model.StaleTrip{a}, nil),
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), 1).Return([]model.StaleTrip{b}, nil),
+		// тик 3 - сигнал что второй тик завершен
+		h.trips.EXPECT().ListStale(gomock.Any(), gomock.Any(), gomock.Any(), 1).
+			DoAndReturn(func(context.Context, time.Duration, *model.StaleCursor, int) ([]model.StaleTrip, error) {
+				close(scanned)
+				return nil, nil
+			}),
+	)
+	h.ticker.tick(t)
+	<-started
+	h.ticker.tick(t)
+	h.ticker.tick(t)
+	<-scanned
+	require.EqualValues(t, 3, h.counterTotal(t, metricRowsRead))
+	require.EqualValues(t, 2, h.counter(t, metricStaleChecks, resQueued))
+	require.EqualValues(t, 1, h.counter(t, metricStaleChecks, resDropped))
+	close(release)
+	require.NoError(t, h.c.Shutdown(context.Background()))
+	require.EqualValues(t, 2, h.counter(t, metricRequests, resSuccess))
 }

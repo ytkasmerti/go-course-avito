@@ -37,4 +37,11 @@ type Position struct {
 type StaleTrip struct {
 	ID       uuid.UUID
 	DriverID uuid.UUID
+	LastAt   time.Time // ключ курсора и приоритета
+}
+
+// ключ последней прочитанной строки, продолжение выборки без OFFSET
+type StaleCursor struct {
+	At time.Time
+	ID uuid.UUID
 }

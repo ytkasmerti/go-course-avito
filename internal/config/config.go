@@ -27,6 +27,7 @@ type Config struct {
 	PositionQueueSize       int
 	PushHTTPURL             string
 	PushRequestTimeout      time.Duration
+	PositionBatchSize       int
 }
 
 func Load() (*Config, error) {
@@ -104,19 +105,28 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	staleAfter, err := envDuration("POSITION_STALE_AFTER", 60*time.Second)
 	if err != nil {
 		return nil, err
 	}
+
 	pushTimeout, err := envDuration("PUSH_REQUEST_TIMEOUT", time.Second)
 	if err != nil {
 		return nil, err
 	}
+
 	workers, err := envInt("POSITION_WORKERS", 4)
 	if err != nil {
 		return nil, err
 	}
+
 	queueSize, err := envInt("POSITION_QUEUE_SIZE", 100)
+	if err != nil {
+		return nil, err
+	}
+
+	batchSize, err := envInt("POSITION_BATCH_SIZE", 100)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +151,7 @@ func Load() (*Config, error) {
 		PositionQueueSize:       queueSize,
 		PushHTTPURL:             pushURL,
 		PushRequestTimeout:      pushTimeout,
+		PositionBatchSize:       batchSize,
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -193,6 +204,10 @@ func (c *Config) validate() error {
 
 	if c.PositionQueueSize <= 0 {
 		return fmt.Errorf("POSITION_QUEUE_SIZE must be > 0, got %d", c.PositionQueueSize)
+	}
+
+	if c.PositionBatchSize <= 0 {
+		return fmt.Errorf("POSITION_BATCH_SIZE must be > 0, got %d", c.PositionBatchSize)
 	}
 
 	return nil

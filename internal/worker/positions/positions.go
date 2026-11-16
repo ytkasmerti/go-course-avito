@@ -19,26 +19,14 @@ import (
 	"github.com/ytkasmerti/go-course-avito/internal/model"
 )
 
-type (
-	staleTrips interface {
-		ListStale(ctx context.Context, staleAfter time.Duration) ([]model.StaleTrip, error)
-	}
-	pushGateway interface {
-		RequestPosition(ctx context.Context, tripID, driverID uuid.UUID) error
-	}
-)
-
-type Ticker interface {
-	C() <-chan time.Time
-	Stop()
+type Config struct {
+	CheckInterval time.Duration
+	StaleAfter    time.Duration
+	Workers       int
+	QueueSize     int
+	PushTimeout   time.Duration
+	BatchSize     int
 }
-
-type realTicker struct{ t *time.Ticker }
-
-func (r realTicker) C() <-chan time.Time { return r.t.C }
-func (r realTicker) Stop()               { r.t.Stop() }
-
-func newRealTicker(d time.Duration) Ticker { return realTicker{t: time.NewTicker(d)} }
 
 const (
 	resultQueued    = "queued"
@@ -46,73 +34,8 @@ const (
 	resultDropped   = "dropped"
 	resultSuccess   = "success"
 	resultError     = "error"
+	attrTripID      = "trip_id"
 )
-
-type metrics struct {
-	staleChecks metric.Int64Counter
-	requests    metric.Int64Counter
-	duration    metric.Float64Histogram
-	active      atomic.Int64
-}
-
-func newMetrics(queueSize func() int) (*metrics, error) {
-	meter := otel.Meter("trip-service/positions")
-	staleChecks, err := meter.Int64Counter("tripgo.stale_checks",
-		metric.WithDescription("Stale trip check results"))
-	if err != nil {
-		return nil, err
-	}
-	requests, err := meter.Int64Counter("tripgo.position_requests",
-		metric.WithDescription("Position request results"))
-	if err != nil {
-		return nil, err
-	}
-	duration, err := meter.Float64Histogram("tripgo.position_requests.duration",
-		metric.WithUnit("s"), metric.WithDescription("Push Service call duration"))
-	if err != nil {
-		return nil, err
-	}
-	m := &metrics{staleChecks: staleChecks, requests: requests, duration: duration}
-	_, err = meter.Int64ObservableGauge("tripgo.position_requests.queue.size",
-		metric.WithDescription("Tasks in queue"),
-		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
-			o.Observe(int64(queueSize()))
-			return nil
-		}))
-	if err != nil {
-		return nil, err
-	}
-	_, err = meter.Int64ObservableGauge("tripgo.position_requests.workers.active",
-		metric.WithDescription("Busy workers"),
-		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
-			o.Observe(m.active.Load())
-			return nil
-		}))
-	if err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-func (m *metrics) staleCheck(ctx context.Context, result string) {
-	m.staleChecks.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
-}
-
-func (m *metrics) request(ctx context.Context, result string) {
-	m.requests.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
-}
-
-func (m *metrics) observeDuration(ctx context.Context, result string, seconds float64) {
-	m.duration.Record(ctx, seconds, metric.WithAttributes(attribute.String("result", result)))
-}
-
-type Config struct {
-	CheckInterval time.Duration
-	StaleAfter    time.Duration
-	Workers       int
-	QueueSize     int
-	PushTimeout   time.Duration
-}
 
 type task struct {
 	trip model.StaleTrip
@@ -136,6 +59,107 @@ type Component struct {
 	scannerDone   chan struct{}
 	workersCancel context.CancelFunc
 	workersDone   chan struct{}
+}
+type (
+	staleTrips interface {
+		ListStale(ctx context.Context, staleAfter time.Duration, after *model.StaleCursor, limit int) ([]model.StaleTrip, error)
+	}
+	pushGateway interface {
+		RequestPosition(ctx context.Context, tripID, driverID uuid.UUID) error
+	}
+)
+
+type Ticker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type realTicker struct{ t *time.Ticker }
+
+func (r realTicker) C() <-chan time.Time { return r.t.C }
+func (r realTicker) Stop()               { r.t.Stop() }
+
+func newRealTicker(d time.Duration) Ticker { return realTicker{t: time.NewTicker(d)} }
+
+type metrics struct {
+	staleChecks metric.Int64Counter
+	requests    metric.Int64Counter
+	duration    metric.Float64Histogram
+	active      atomic.Int64
+	rowsRead    metric.Int64Counter
+}
+
+func newMetrics(queueSize func() int) (*metrics, error) {
+	meter := otel.Meter("trip-service/positions")
+
+	staleChecks, err := meter.Int64Counter("tripgo.stale_checks",
+		metric.WithDescription("Stale trip check results"))
+	if err != nil {
+		return nil, err
+	}
+
+	requests, err := meter.Int64Counter("tripgo.position_requests",
+		metric.WithDescription("Position request results"))
+	if err != nil {
+		return nil, err
+	}
+
+	duration, err := meter.Float64Histogram("tripgo.position_requests.duration",
+		metric.WithUnit("s"), metric.WithDescription("Push Service call duration"))
+	if err != nil {
+		return nil, err
+	}
+
+	rowsRead, err := meter.Int64Counter("tripgo.stale_rows_read",
+		metric.WithDescription("Stale trips read per tick"))
+	if err != nil {
+		return nil, err
+	}
+
+	m := &metrics{
+		staleChecks: staleChecks,
+		requests:    requests,
+		duration:    duration,
+		rowsRead:    rowsRead,
+	}
+
+	_, err = meter.Int64ObservableGauge("tripgo.position_requests.queue.size",
+		metric.WithDescription("Tasks in queue"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(int64(queueSize()))
+			return nil
+		}))
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = meter.Int64ObservableGauge("tripgo.position_requests.workers.active",
+		metric.WithDescription("Busy workers"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(m.active.Load())
+			return nil
+		}))
+	if err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+func (m *metrics) staleCheck(ctx context.Context, result string) {
+	m.staleChecks.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
+}
+
+func (m *metrics) request(ctx context.Context, result string) {
+	m.requests.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
+}
+
+func (m *metrics) observeDuration(ctx context.Context, result string, seconds float64) {
+	m.duration.Record(ctx, seconds, metric.WithAttributes(attribute.String("result", result)))
+}
+
+func (m *metrics) addRows(ctx context.Context, n int) {
+	m.rowsRead.Add(ctx, int64(n))
 }
 
 func New(cfg Config, trips staleTrips, push pushGateway, log *slog.Logger, newTicker func(time.Duration) Ticker) (*Component, error) {
@@ -226,39 +250,53 @@ func (c *Component) runScanner(ctx context.Context) {
 func (c *Component) scanOnce(ctx context.Context) {
 	ctx, span := c.tracer.Start(ctx, "positions.scan")
 	defer span.End()
-	trips, err := c.trips.ListStale(ctx, c.cfg.StaleAfter)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "stale scan failed")
-		if ctx.Err() == nil { // при остановке отмена запроса
+	var cursor *model.StaleCursor
+	read := 0
+	for ctx.Err() == nil {
+		batch, err := c.trips.ListStale(ctx, c.cfg.StaleAfter, cursor, c.cfg.BatchSize)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "stale scan failed")
 			c.log.WarnContext(ctx, "stale trips scan failed", slog.Any("err", err))
+			break
 		}
-		return
-	}
-	for _, t := range trips {
-		result := c.enqueue(task{trip: t, link: span.SpanContext()})
-		c.metrics.staleCheck(ctx, result)
-		if result == resultDropped {
-			c.metrics.request(ctx, resultDropped)
-			c.log.WarnContext(ctx, "position request dropped: queue full",
-				slog.String("trip_id", t.ID.String()))
+		read += len(batch)
+		full := false
+		for _, t := range batch {
+			if c.enqueue(ctx, task{trip: t, link: span.SpanContext()}) == resultDropped {
+				full = true // очередь заполнилась - на следующем тике заново
+				break
+			}
 		}
+		if full || len(batch) < c.cfg.BatchSize {
+			break
+		}
+		last := batch[len(batch)-1]
+		cursor = &model.StaleCursor{At: last.LastAt, ID: last.ID}
 	}
+	c.metrics.addRows(ctx, read)
+	span.SetAttributes(attribute.Int("stale.rows_read", read))
 }
 
 // не блокирует сканер, заполненная очередь - дроп
-func (c *Component) enqueue(t task) string {
+func (c *Component) enqueue(ctx context.Context, t task) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.pending[t.trip.ID]; ok {
+		c.metrics.staleCheck(ctx, resultDuplicate)
 		return resultDuplicate
 	}
 	c.pending[t.trip.ID] = struct{}{}
 	select {
 	case c.queue <- t:
+		c.metrics.staleCheck(ctx, resultQueued)
 		return resultQueued
 	default:
 		delete(c.pending, t.trip.ID)
+		c.metrics.staleCheck(ctx, resultDropped)
+		c.metrics.request(ctx, resultDropped)
+		c.log.WarnContext(ctx, "position request dropped: queue full",
+			slog.String(attrTripID, t.trip.ID.String()))
 		return resultDropped
 	}
 }
@@ -304,7 +342,7 @@ func (c *Component) process(ctx context.Context, t task) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "push request failed")
 		c.log.WarnContext(ctx, "push request failed",
-			slog.String("trip_id", t.trip.ID.String()), slog.Any("err", err))
+			slog.String("attrTripID", t.trip.ID.String()), slog.Any("err", err))
 	}
 	c.metrics.request(ctx, result)
 	c.metrics.observeDuration(ctx, result, time.Since(start).Seconds())

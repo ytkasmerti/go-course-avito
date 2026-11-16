@@ -230,15 +230,22 @@ func (r *Repo) SaveIdempotencyKey(ctx context.Context, key uuid.UUID, hash strin
 	return nil
 }
 
-// Поездки без свежих координат одним запросом
-// Условие по времени считается в SQL, первыми идут те, кто молчит дольше всех
-func (r *Repo) ListStale(ctx context.Context, staleAfter time.Duration) ([]model.StaleTrip, error) {
-	q := sq.Select("id", "driver_id").
+// Читает один батч устаревших поездок, продолжая с курсора (время, id)
+// Условие по времени считается в SQL
+func (r *Repo) ListStale(ctx context.Context, staleAfter time.Duration, after *model.StaleCursor, limit int) ([]model.StaleTrip, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("stale batch limit must be > 0, got %d", limit)
+	}
+	q := sq.Select("id", "driver_id", "COALESCE(last_position_at, started_at) AS last_at").
 		From(tableTrips).
 		Where(sq.Eq{colStatus: string(domaintrip.StatusActive)}).
 		Where("COALESCE(last_position_at, started_at) < now() - make_interval(secs => ?::double precision)", staleAfter.Seconds()).
-		OrderBy("COALESCE(last_position_at, started_at)").
+		OrderBy("last_at", "id").
+		Limit(uint64(limit)).
 		PlaceholderFormat(sq.Dollar)
+	if after != nil {
+		q = q.Where("(COALESCE(last_position_at, started_at), id) > (?, ?)", after.At, after.ID)
+	}
 	sql, args, err := q.ToSql()
 	if err != nil {
 		return nil, fmt.Errorf("build select stale: %w", err)
@@ -250,10 +257,10 @@ func (r *Repo) ListStale(ctx context.Context, staleAfter time.Duration) ([]model
 		return nil, fmt.Errorf("select stale: %w", err)
 	}
 	defer rows.Close()
-	var res []model.StaleTrip
+	res := make([]model.StaleTrip, 0, limit)
 	for rows.Next() {
 		var t model.StaleTrip
-		if err := rows.Scan(&t.ID, &t.DriverID); err != nil {
+		if err := rows.Scan(&t.ID, &t.DriverID, &t.LastAt); err != nil {
 			return nil, fmt.Errorf("scan stale: %w", err)
 		}
 		res = append(res, t)
