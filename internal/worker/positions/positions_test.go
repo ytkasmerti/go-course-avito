@@ -431,3 +431,56 @@ func TestComponent_ScanStopsWhenQueueFull(t *testing.T) {
 	require.NoError(t, h.c.Shutdown(context.Background()))
 	require.EqualValues(t, 2, h.counter(t, metricRequests, resSuccess))
 }
+
+// Проверяет приоритет, воркер забирает поездки в порядке возрастания времени последней координаты
+func TestComponent_PriorityOrder(t *testing.T) {
+	h := newHarness(t, 1, 3)
+	now := time.Now()
+	blocker := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: now}
+	young := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: now.Add(-time.Minute)}
+	mid := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: now.Add(-2 * time.Minute)}
+	old := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: now.Add(-3 * time.Minute)}
+	started, release := make(chan struct{}), make(chan struct{})
+	blockPush(h.push, blocker.ID, started, release) // воркер занят, все три копятся в очереди
+	var order []uuid.UUID
+	h.push.EXPECT().RequestPosition(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id, _ uuid.UUID) error {
+			order = append(order, id) // пишет только один воркер
+			return nil
+		}).Times(3)
+	scanned := make(chan struct{})
+	h.scans(scanned, []model.StaleTrip{blocker}, []model.StaleTrip{young, mid, old}, nil)
+	h.ticker.tick(t)
+	<-started
+	h.ticker.tick(t)
+	h.ticker.tick(t)
+	<-scanned
+	close(release)
+	require.NoError(t, h.c.Shutdown(context.Background()))
+	require.Equal(t, []uuid.UUID{old.ID, mid.ID, young.ID}, order)
+}
+
+// Проверяет вытеснение, при полной очереди более старая поездка вытесняет более свежую
+func TestComponent_EvictsFresherOnOverflow(t *testing.T) {
+	h := newHarness(t, 1, 1)
+	now := time.Now()
+	blocker := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: now}
+	fresh := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: now.Add(-time.Minute)}
+	older := model.StaleTrip{ID: uuid.New(), DriverID: uuid.New(), LastAt: now.Add(-time.Hour)}
+	started, release := make(chan struct{}), make(chan struct{})
+	blockPush(h.push, blocker.ID, started, release)
+	h.push.EXPECT().RequestPosition(gomock.Any(), older.ID, gomock.Any()).Return(nil) // fresh не ожидается
+	scanned := make(chan struct{})
+	h.scans(scanned, []model.StaleTrip{blocker}, []model.StaleTrip{fresh, older}, nil)
+	h.ticker.tick(t)
+	<-started
+	h.ticker.tick(t)
+	h.ticker.tick(t)
+	<-scanned
+	require.EqualValues(t, 3, h.counter(t, metricStaleChecks, resQueued))
+	require.EqualValues(t, 1, h.counter(t, metricRequests, resDropped)) // вытесненная fresh
+	require.Contains(t, h.logs.String(), "evicted from queue")
+	close(release)
+	require.NoError(t, h.c.Shutdown(context.Background()))
+	require.EqualValues(t, 2, h.counter(t, metricRequests, resSuccess))
+}

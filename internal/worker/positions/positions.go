@@ -2,6 +2,7 @@
 package positions
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"log/slog"
@@ -37,24 +38,43 @@ const (
 	attrTripID      = "trip_id"
 )
 
+// min-heap по LastAt, первым уходит тот, кто дольше молчит
+type priorityQueue []task
+
+func (q priorityQueue) Len() int { return len(q) }
+
+func (q priorityQueue) Less(i, j int) bool { return q[i].trip.LastAt.Before(q[j].trip.LastAt) }
+
+func (q priorityQueue) Swap(i, j int) { q[i], q[j] = q[j], q[i] }
+
+func (q *priorityQueue) Push(x any) { *q = append(*q, x.(task)) }
+
+func (q *priorityQueue) Pop() any {
+	old := *q
+	n := len(old)
+	t := old[n-1]
+	*q = old[:n-1]
+	return t
+}
+
 type task struct {
 	trip model.StaleTrip
 	link trace.SpanContext // спан проверки, связь через span link
 }
 
 type Component struct {
-	cfg       Config
-	trips     staleTrips
-	push      pushGateway
-	log       *slog.Logger
-	metrics   *metrics
-	newTicker func(time.Duration) Ticker
-	tracer    trace.Tracer
-
-	queue   chan task
-	mu      sync.Mutex
-	pending map[uuid.UUID]struct{} // в очереди: сканер, воркеры и хендлеры координат
-
+	cfg           Config
+	trips         staleTrips
+	push          pushGateway
+	log           *slog.Logger
+	metrics       *metrics
+	newTicker     func(time.Duration) Ticker
+	tracer        trace.Tracer
+	queue         priorityQueue
+	cond          *sync.Cond
+	closed        bool
+	mu            sync.Mutex
+	pending       map[uuid.UUID]struct{} // в очереди: сканер, воркеры и хендлеры координат
 	scannerCancel context.CancelFunc
 	scannerDone   chan struct{}
 	workersCancel context.CancelFunc
@@ -163,23 +183,29 @@ func (m *metrics) addRows(ctx context.Context, n int) {
 }
 
 func New(cfg Config, trips staleTrips, push pushGateway, log *slog.Logger, newTicker func(time.Duration) Ticker) (*Component, error) {
-	queue := make(chan task, cfg.QueueSize)
-	m, err := newMetrics(func() int { return len(queue) })
-	if err != nil {
-		return nil, fmt.Errorf("init positions metrics: %w", err)
-	}
 	if newTicker == nil {
 		newTicker = newRealTicker
 	}
-	return &Component{
-		cfg: cfg, trips: trips, push: push, log: log, metrics: m,
+	c := &Component{
+		cfg: cfg, trips: trips, push: push, log: log,
 		newTicker:   newTicker,
 		tracer:      otel.Tracer("trip-service/positions"),
-		queue:       queue,
+		queue:       make(priorityQueue, 0, cfg.QueueSize),
 		pending:     make(map[uuid.UUID]struct{}),
 		scannerDone: make(chan struct{}),
 		workersDone: make(chan struct{}),
-	}, nil
+	}
+	c.cond = sync.NewCond(&c.mu)
+	m, err := newMetrics(func() int {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.queue.Len()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init positions metrics: %w", err)
+	}
+	c.metrics = m
+	return c, nil
 }
 
 // Запускает сканер и фиксированный пул воркеров;
@@ -188,6 +214,12 @@ func (c *Component) Start(ctx context.Context) {
 	c.scannerCancel = scannerCancel
 	workersCtx, workersCancel := context.WithCancel(ctx)
 	c.workersCancel = workersCancel
+
+	// отмена контекста должна разбудить воркеров, ждущих на cond
+	go func() {
+		<-workersCtx.Done()
+		c.cond.Broadcast()
+	}()
 
 	var wg sync.WaitGroup
 	for i := 0; i < c.cfg.Workers; i++ {
@@ -216,8 +248,11 @@ func (c *Component) Cancel(tripID uuid.UUID) {
 // дорабатывают очередь в рамках ctx, по его истечении принудительная отмена
 func (c *Component) Shutdown(ctx context.Context) error {
 	c.scannerCancel()
-	<-c.scannerDone // запрос сканера в бд ограничен его контекстом
-	close(c.queue)
+	<-c.scannerDone
+	c.mu.Lock()
+	c.closed = true
+	c.cond.Broadcast()
+	c.mu.Unlock()
 	defer c.workersCancel()
 	defer c.log.InfoContext(ctx, "position workers stopped")
 	select {
@@ -225,6 +260,7 @@ func (c *Component) Shutdown(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		c.workersCancel()
+		c.cond.Broadcast()
 		<-c.workersDone
 		c.log.WarnContext(ctx, "position workers stopped by timeout", slog.Any("err", ctx.Err()))
 		return fmt.Errorf("drain position workers: %w", ctx.Err())
@@ -278,7 +314,7 @@ func (c *Component) scanOnce(ctx context.Context) {
 	span.SetAttributes(attribute.Int("stale.rows_read", read))
 }
 
-// не блокирует сканер, заполненная очередь - дроп
+// не блокирует сканер, при переполнении вытесняем самую свежую поездку, если новая старше, иначе дропаем новую
 func (c *Component) enqueue(ctx context.Context, t task) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -286,32 +322,61 @@ func (c *Component) enqueue(ctx context.Context, t task) string {
 		c.metrics.staleCheck(ctx, resultDuplicate)
 		return resultDuplicate
 	}
-	c.pending[t.trip.ID] = struct{}{}
-	select {
-	case c.queue <- t:
-		c.metrics.staleCheck(ctx, resultQueued)
-		return resultQueued
-	default:
-		delete(c.pending, t.trip.ID)
-		c.metrics.staleCheck(ctx, resultDropped)
+	if c.queue.Len() >= c.cfg.QueueSize {
+		worst := c.freshestIndex()
+		if !t.trip.LastAt.Before(c.queue[worst].trip.LastAt) {
+			c.metrics.staleCheck(ctx, resultDropped)
+			c.metrics.request(ctx, resultDropped)
+			c.log.WarnContext(ctx, "position request dropped: queue full",
+				slog.String(attrTripID, t.trip.ID.String()))
+			return resultDropped
+		}
+		// вытесненная молчит меньше всех и попадет в выборку на следующем тике
+		evicted := c.queue[worst]
+		heap.Remove(&c.queue, worst)
+		delete(c.pending, evicted.trip.ID)
 		c.metrics.request(ctx, resultDropped)
-		c.log.WarnContext(ctx, "position request dropped: queue full",
-			slog.String(attrTripID, t.trip.ID.String()))
-		return resultDropped
+		c.log.WarnContext(ctx, "position request evicted from queue",
+			slog.String(attrTripID, evicted.trip.ID.String()))
 	}
+	heap.Push(&c.queue, t)
+	c.pending[t.trip.ID] = struct{}{}
+	c.cond.Signal()
+	c.metrics.staleCheck(ctx, resultQueued)
+	return resultQueued
+}
+
+// индекс самой свежей поездки в куче
+func (c *Component) freshestIndex() int {
+	worst := 0
+	for i := 1; i < c.queue.Len(); i++ {
+		if c.queue[worst].trip.LastAt.Before(c.queue[i].trip.LastAt) {
+			worst = i
+		}
+	}
+	return worst
+}
+
+// ждет задачу, при закрытой и пустой очереди возвращает false
+func (c *Component) next() (task, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.queue.Len() == 0 && !c.closed {
+		c.cond.Wait()
+	}
+	if c.queue.Len() == 0 {
+		return task{}, false
+	}
+	return heap.Pop(&c.queue).(task), true
 }
 
 func (c *Component) runWorker(ctx context.Context) {
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case t, ok := <-c.queue:
-			if !ok {
-				return // канал закрыт и пуст — очередь доработана
-			}
-			c.process(ctx, t)
+		t, ok := c.next()
+		if !ok || ctx.Err() != nil {
+			return // канал закрыт и пуст — очередь доработана
 		}
+		c.process(ctx, t)
 	}
 }
 
