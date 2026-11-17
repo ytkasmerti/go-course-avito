@@ -35,3 +35,11 @@ func (t *Trip) Finish(at time.Time) error {
 	t.FinishedAt = &at
 	return nil
 }
+
+// Координаты принимает только активная поездка
+func (t *Trip) EnsureActive() error {
+	if t.Status != StatusActive {
+		return ErrTripCompleted
+	}
+	return nil
+}

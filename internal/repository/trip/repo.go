@@ -21,6 +21,8 @@ const (
 	tableTrips       = "trips"
 	tableHistory     = "trip_status_history"
 	tableIdempotency = "idempotency_keys"
+	tablePositions   = "trip_positions"
+	colStatus        = "status"
 )
 
 type Repo struct {
@@ -35,6 +37,7 @@ func New(pool *pgxpool.Pool, queryTimeout time.Duration) *Repo {
 func (r *Repo) querier(ctx context.Context) interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 } {
 	if tx, ok := transaction.TxFromContext(ctx); ok {
 		return tx
@@ -61,7 +64,7 @@ func (r *Repo) Create(ctx context.Context, t model.Trip) error {
 		Columns("id", "user_id", "driver_id",
 			"start_latitude", "start_longitude",
 			"end_latitude", "end_longitude",
-			"price", "status", "started_at").
+			"price", colStatus, "started_at").
 		Values(t.ID, t.UserID, t.DriverID,
 			t.StartLatitude, t.StartLongitude,
 			t.EndLatitude, t.EndLongitude,
@@ -101,7 +104,8 @@ func (r *Repo) GetByID(ctx context.Context, id uuid.UUID) (*model.Trip, error) {
 	q := sq.Select("id", "user_id", "driver_id",
 		"start_latitude", "start_longitude",
 		"end_latitude", "end_longitude",
-		"price", "status", "started_at", "finished_at").
+		"price", colStatus, "started_at", "finished_at",
+		"last_position_at").
 		From(tableTrips).
 		Where(sq.Eq{"id": id}).
 		PlaceholderFormat(sq.Dollar)
@@ -117,6 +121,7 @@ func (r *Repo) GetByID(ctx context.Context, id uuid.UUID) (*model.Trip, error) {
 		&t.StartLatitude, &t.StartLongitude,
 		&t.EndLatitude, &t.EndLongitude,
 		&t.Price, &t.Status, &t.StartedAt, &t.FinishedAt,
+		&t.LastPositionAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -131,10 +136,10 @@ func (r *Repo) GetByID(ctx context.Context, id uuid.UUID) (*model.Trip, error) {
 // в UPDATE защищает от конкурентного завершения, второй запрос не найдет строку
 func (r *Repo) SaveFinished(ctx context.Context, id uuid.UUID, finishedAt time.Time) (*model.Trip, error) {
 	update := sq.Update(tableTrips).
-		Set("status", string(domaintrip.StatusCompleted)).
+		Set(colStatus, string(domaintrip.StatusCompleted)).
 		Set("finished_at", finishedAt).
 		Set("updated_at", sq.Expr("now()")).
-		Where(sq.Eq{"id": id, "status": string(domaintrip.StatusActive)}).
+		Where(sq.Eq{"id": id, colStatus: string(domaintrip.StatusActive)}).
 		PlaceholderFormat(sq.Dollar)
 
 	sql, args, err := update.ToSql()
@@ -223,4 +228,137 @@ func (r *Repo) SaveIdempotencyKey(ctx context.Context, key uuid.UUID, hash strin
 		return domaintrip.ErrIdempotencyRace
 	}
 	return nil
+}
+
+// Читает один батч устаревших поездок, продолжая с курсора (время, id)
+// Условие по времени считается в SQL
+func (r *Repo) ListStale(ctx context.Context, staleAfter time.Duration, after *model.StaleCursor, limit int) ([]model.StaleTrip, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("stale batch limit must be > 0, got %d", limit)
+	}
+	q := sq.Select("id", "driver_id", "COALESCE(last_position_at, started_at) AS last_at").
+		From(tableTrips).
+		Where(sq.Eq{colStatus: string(domaintrip.StatusActive)}).
+		Where("COALESCE(last_position_at, started_at) < now() - make_interval(secs => ?::double precision)", staleAfter.Seconds()).
+		OrderBy("last_at", "id").
+		Limit(uint64(limit)).
+		PlaceholderFormat(sq.Dollar)
+	if after != nil {
+		q = q.Where("(COALESCE(last_position_at, started_at), id) > (?, ?)", after.At, after.ID)
+	}
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build select stale: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+	rows, err := r.querier(ctx).Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("select stale: %w", err)
+	}
+	defer rows.Close()
+	res := make([]model.StaleTrip, 0, limit)
+	for rows.Next() {
+		var t model.StaleTrip
+		if err := rows.Scan(&t.ID, &t.DriverID, &t.LastAt); err != nil {
+			return nil, fmt.Errorf("scan stale: %w", err)
+		}
+		res = append(res, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("stale rows: %w", err)
+	}
+	return res, nil
+}
+
+// Вызывается внутри TxManager, UPDATE и INSERT в одной транзакции
+// Старая координата не состаривает поездку, сравнение в самом UPDATE
+func (r *Repo) SavePosition(ctx context.Context, p model.Position) (*model.Position, error) {
+	update := sq.Update(tableTrips).
+		Set("last_position_at", p.RecordedAt).
+		Set("updated_at", sq.Expr("now()")).
+		Where(sq.Eq{"id": p.TripID, colStatus: string(domaintrip.StatusActive)}).
+		Where("(last_position_at IS NULL OR last_position_at < ?)", p.RecordedAt).
+		PlaceholderFormat(sq.Dollar)
+	sql, args, err := update.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build update last_position_at: %w", err)
+	}
+	tag, err := r.exec(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update last_position_at: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// ноль строк - поездки нет, она завершена  либо координата опоздала
+		status, err := r.tripStatus(ctx, p.TripID)
+		if err != nil {
+			return nil, err
+		}
+		if status != string(domaintrip.StatusActive) {
+			return nil, domaintrip.ErrTripCompleted
+		}
+	}
+	insert := sq.Insert(tablePositions).
+		Columns("trip_id", "latitude", "longitude", "recorded_at").
+		Values(p.TripID, p.Latitude, p.Longitude, p.RecordedAt).
+		Suffix("RETURNING id").
+		PlaceholderFormat(sq.Dollar)
+	sql, args, err = insert.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build insert position: %w", err)
+	}
+	if err := r.queryRowScan(ctx, sql, args, &p.ID); err != nil {
+		return nil, fmt.Errorf("insert position: %w", err)
+	}
+	return &p, nil
+}
+
+func (r *Repo) tripStatus(ctx context.Context, tripID uuid.UUID) (string, error) {
+	q := sq.Select(colStatus).From(tableTrips).
+		Where(sq.Eq{"id": tripID}).
+		PlaceholderFormat(sq.Dollar)
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return "", fmt.Errorf("build select status: %w", err)
+	}
+	var status string
+	if err := r.queryRowScan(ctx, sql, args, &status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", domaintrip.ErrTripNotFound
+		}
+		return "", fmt.Errorf("select status: %w", err)
+	}
+	return status, nil
+}
+
+// отдает весь маршрут, сортировка под индекс trip_positions_trip_recorded_idx
+func (r *Repo) ListPositions(ctx context.Context, tripID uuid.UUID) ([]model.Position, error) {
+	q := sq.Select("id", "trip_id", "latitude", "longitude", "recorded_at").
+		From(tablePositions).
+		Where(sq.Eq{"trip_id": tripID}).
+		OrderBy("recorded_at", "id").
+		PlaceholderFormat(sq.Dollar)
+	sql, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build select positions: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+	rows, err := r.querier(ctx).Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("select positions: %w", err)
+	}
+	defer rows.Close()
+	var res []model.Position
+	for rows.Next() {
+		var p model.Position
+		if err := rows.Scan(&p.ID, &p.TripID, &p.Latitude, &p.Longitude, &p.RecordedAt); err != nil {
+			return nil, fmt.Errorf("scan position: %w", err)
+		}
+		res = append(res, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("positions rows: %w", err)
+	}
+	return res, nil
 }
